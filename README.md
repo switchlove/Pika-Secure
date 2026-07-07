@@ -1,5 +1,7 @@
 # PikaSecure
 
+[![Coverage Status](https://coveralls.io/repos/github/switchlove/Pika-Secure/badge.svg?branch=main)](https://coveralls.io/github/switchlove/Pika-Secure?branch=main)
+
 A Discord verification/security bot. New members are quarantined on join, screened with a risk score (account age,
 missing avatar, join-burst/raid detection), and must click **Verify** to proceed — risky joins are escalated to an
 image captcha. Unverified members are auto-kicked after a configurable timeout. No general moderation commands are
@@ -63,14 +65,29 @@ of servers with no code changes. The only thing that differs is command deployme
 After inviting the bot to each additional server, an admin there just needs to run `/setup` once in that server —
 its configuration is independent from every other server the bot is in.
 
+## Testing
+
+Tests run on [Vitest](https://vitest.dev):
+
+- `npm test` — run the test suite once
+- `npm run test:watch` — re-run on file changes
+- `npm run coverage` — run with coverage, writing `coverage/lcov.info`
+
+CI runs the suite on every push/PR to `main` (`.github/workflows/test.yml`) and uploads coverage to
+[Coveralls](https://coveralls.io/github/switchlove/Pika-Secure). To enable this for a fork, sign in to coveralls.io
+with GitHub and turn the repo on there — no extra secrets are needed since the workflow authenticates with the
+repo's built-in `GITHUB_TOKEN`.
+
 ## Notes
 
 - Storage is SQLite via Node's built-in `node:sqlite` module (requires Node >= 22.5.0) — no native build step needed.
   If a future Node version drops `node:sqlite`, `better-sqlite3` is a drop-in-shaped fallback (same synchronous
   `prepare().run/get/all` API) but requires a native build toolchain.
 - Captcha images are generated with `@napi-rs/canvas`, which ships prebuilt binaries (no Cairo/GTK/node-gyp needed).
-  If `npm start` errors with "Cannot find native binding" for `@napi-rs/canvas`, this is a known npm optional-dependency
-  bug (npm/cli#4828) — run `npm install` again, or delete `node_modules`/`package-lock.json` and reinstall.
+  If `npm start` errors with "Cannot find native binding" for `@napi-rs/canvas` (or `npm test`/`npm run coverage`
+  errors the same way for `@rolldown/binding-*`, Vitest's bundler), this is a known npm optional-dependency bug
+  (npm/cli#4828) — run `npm install` again, or as a last resort `npm install --save-dev <the missing package>@<version
+  from package-lock.json>` to force it in.
 - If you're upgrading an existing deployment, re-run `npm run deploy-commands` (or `:global`) after pulling changes
   that add or modify `/setup` subcommands (e.g. `/setup admins`) — the database schema migrates itself automatically
   on startup, but Discord's command definitions only update when you explicitly redeploy them.
