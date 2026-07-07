@@ -1,0 +1,23 @@
+{
+  "name": "pikasecure",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Discord verification/security bot: quarantine-gated joins with risk-based captcha escalation.",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "deploy-commands": "node src/deploy-commands.js",
+    "deploy-commands:global": "node src/deploy-commands.js --global"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.2",
+    "discord.js": "^14.26.4",
+    "dotenv": "^16.4.5"
+  },
+  "optionalDependencies": {
+    "@napi-rs/canvas-win32-x64-msvc": "^1.0.2"
+  }
+}
