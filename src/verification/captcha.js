@@ -1,4 +1,14 @@
-const { createCanvas } = require('@napi-rs/canvas');
+const path = require('path');
+const { createCanvas, GlobalFonts } = require('@napi-rs/canvas');
+
+// Bundled rather than relying on a system font: generic CSS family names like
+// "sans-serif" don't resolve in @napi-rs/canvas, and minimal/production hosts
+// may have no fonts installed at all, which renders captcha text as tofu boxes.
+const FONT_FAMILY = 'PikaSecure Captcha';
+GlobalFonts.registerFromPath(
+  path.join(__dirname, '..', '..', 'assets', 'fonts', 'DejaVuSans-Bold.ttf'),
+  FONT_FAMILY,
+);
 
 // Excludes visually ambiguous characters (0/O, 1/I/L).
 const CHARSET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -44,7 +54,7 @@ function renderCaptchaImage(code, tier) {
   }
 
   const charWidth = width / (code.length + 1);
-  ctx.font = 'bold 42px sans-serif';
+  ctx.font = `bold 42px "${FONT_FAMILY}"`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
