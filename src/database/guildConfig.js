@@ -27,6 +27,8 @@ const ALLOWED_FIELDS = new Set([
   'verified_role_id',
   'verification_channel_id',
   'mod_log_channel_id',
+  'welcome_channel_id',
+  'welcome_message',
   'honeypot_channel_id',
   'honeypot_message_id',
   'gate_message_id',

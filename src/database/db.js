@@ -31,5 +31,11 @@ if (!guildConfigColumns.some((col) => col.name === 'hard_captcha_risk_threshold'
 if (!guildConfigColumns.some((col) => col.name === 'admin_role_ids')) {
   db.exec("ALTER TABLE guild_config ADD COLUMN admin_role_ids TEXT NOT NULL DEFAULT '[]'");
 }
+if (!guildConfigColumns.some((col) => col.name === 'welcome_channel_id')) {
+  db.exec('ALTER TABLE guild_config ADD COLUMN welcome_channel_id TEXT');
+}
+if (!guildConfigColumns.some((col) => col.name === 'welcome_message')) {
+  db.exec('ALTER TABLE guild_config ADD COLUMN welcome_message TEXT');
+}
 
 module.exports = db;

@@ -85,4 +85,13 @@ describe('updateGuildConfig', () => {
     const updated = updateGuildConfig('guild-fresh', { min_account_age_days: 3 });
     expect(updated.min_account_age_days).toBe(3);
   });
+
+  it('persists the welcome channel and message fields', () => {
+    const updated = updateGuildConfig('guild-welcome', {
+      welcome_channel_id: 'chan-welcome',
+      welcome_message: 'hey {user}!',
+    });
+    expect(updated.welcome_channel_id).toBe('chan-welcome');
+    expect(updated.welcome_message).toBe('hey {user}!');
+  });
 });

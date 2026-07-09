@@ -26,6 +26,7 @@ const { assignUnverifiedRole, applyVerifiedRoles } = require('./quarantine');
 const { generateImageCaptcha, pickDifficulty, normalizeAnswer } = require('./captcha');
 const modlog = require('../modlog/modlog');
 const embeds = require('../modlog/embeds');
+const welcome = require('../welcome/welcome');
 const logger = require('../utils/logger');
 
 // A code solved faster than this after being shown is unlikely to be a human
@@ -77,6 +78,7 @@ async function verifyMember(member, guildConfig, viaCaptcha, latencyMs = null) {
   markVerified(member.guild.id, member.id);
   insertAuditLog(member.guild.id, member.id, 'verified', { viaCaptcha, latencyMs, fastSolve });
   await modlog.send(member.client, guildConfig, embeds.verifiedEmbed(member, viaCaptcha, latencyMs, fastSolve));
+  await welcome.send(member.client, guildConfig, member);
 }
 
 function buildCaptchaPayload(buffer, title, description) {
