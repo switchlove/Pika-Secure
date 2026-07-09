@@ -1,6 +1,8 @@
 # PikaSecure
 
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/switchlove/Pika-Secure/test.yml?branch=main&logo=github&logoColor=%23181717)](https://github.com/switchlove/Pika-Secure/actions/workflows/test.yml)
 [![Coverage Status](https://coveralls.io/repos/github/switchlove/Pika-Secure/badge.svg?branch=main)](https://coveralls.io/github/switchlove/Pika-Secure?branch=main)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 A Discord verification/security bot. New members are quarantined on join, screened with a risk score (account age,
 missing avatar, join-burst/raid detection), and must click **Verify** to proceed — risky joins are escalated to an
@@ -93,3 +95,7 @@ repo's built-in `GITHUB_TOKEN`.
   on startup, but Discord's command definitions only update when you explicitly redeploy them.
 - The auto-kick deadline is persisted in SQLite and swept every ~60s (plus once at startup), so it survives bot
   restarts.
+
+## License
+
+PikaSecure is licensed under the [GNU General Public License v3.0](LICENSE).

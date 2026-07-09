@@ -9,6 +9,7 @@ const {
   syncHoneypotPermissions,
   HONEYPOT_BAIT_EMOJI,
 } = require('../verification/quarantine');
+const { DEFAULT_MESSAGE: DEFAULT_WELCOME_MESSAGE } = require('../welcome/welcome');
 const logger = require('../utils/logger');
 
 const data = new SlashCommandBuilder()
@@ -109,6 +110,24 @@ const data = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub
+      .setName('welcome')
+      .setDescription('Set the channel (and optional message) posted when a member passes verification')
+      .addChannelOption((opt) =>
+        opt
+          .setName('channel')
+          .setDescription('Channel where the welcome message is posted')
+          .addChannelTypes(ChannelType.GuildText)
+          .setRequired(true),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName('message')
+          .setDescription('Custom welcome text — use {user} to mention the new member (optional)')
+          .setRequired(false),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub
       .setName('honeypot')
       .setDescription('Set the honeypot decoy channel')
       .addChannelOption((opt) =>
@@ -150,6 +169,8 @@ function configEmbed(config) {
       { name: 'Verified role', value: config.verified_role_id ? `<@&${config.verified_role_id}>` : 'None (just removes unverified)', inline: true },
       { name: 'Verification channel', value: config.verification_channel_id ? `<#${config.verification_channel_id}>` : 'Not set', inline: true },
       { name: 'Mod-log channel', value: config.mod_log_channel_id ? `<#${config.mod_log_channel_id}>` : 'Not set', inline: true },
+      { name: 'Welcome channel', value: config.welcome_channel_id ? `<#${config.welcome_channel_id}>` : 'Not set', inline: true },
+      { name: 'Welcome message', value: config.welcome_message || DEFAULT_WELCOME_MESSAGE, inline: false },
       { name: 'Honeypot channel', value: config.honeypot_channel_id ? `<#${config.honeypot_channel_id}>` : 'Not set', inline: true },
       { name: 'Auto-kick timeout', value: `${config.verification_timeout_min} min`, inline: true },
       { name: 'Min account age', value: `${config.min_account_age_days} days`, inline: true },
@@ -273,6 +294,20 @@ async function execute(interaction) {
       embeds: [configEmbed(getGuildConfig(guildId))],
       flags: MessageFlags.Ephemeral,
     });
+  }
+
+  if (sub === 'welcome') {
+    const channel = interaction.options.getChannel('channel');
+    const message = interaction.options.getString('message');
+    const updated = updateGuildConfig(guildId, {
+      welcome_channel_id: channel.id,
+      welcome_message: message ?? undefined,
+    });
+    insertAuditLog(guildId, interaction.user.id, 'setup_changed', {
+      welcome: { channel: channel.id, message: message ?? undefined },
+    });
+
+    return interaction.reply({ embeds: [configEmbed(updated)], flags: MessageFlags.Ephemeral });
   }
 
   if (sub === 'honeypot') {

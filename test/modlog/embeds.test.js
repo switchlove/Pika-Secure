@@ -63,7 +63,7 @@ describe('captchaEscalatedEmbed', () => {
     const data = captchaEscalatedEmbed(makeMember()).data;
     expect(data.color).toBe(0xe67e22);
     expect(data.title).toBe('Captcha escalated');
-    expect(data.description).toContain('required a captcha');
+    expect(data.description).toContain('require a captcha');
   });
 });
 

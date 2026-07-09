@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
   verified_role_id            TEXT,
   verification_channel_id     TEXT,
   mod_log_channel_id          TEXT,
+  welcome_channel_id          TEXT,
+  welcome_message             TEXT,
   honeypot_channel_id         TEXT,
   honeypot_message_id         TEXT,
   gate_message_id             TEXT,

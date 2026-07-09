@@ -10,13 +10,14 @@ function makeMember({
   avatar = 'some-hash',
   username = 'normaluser',
   flags = [],
+  hasFlags = true,
 } = {}) {
   return {
     user: {
       createdTimestamp: Date.now() - accountAgeDays * DAY_MS,
       avatar,
       username,
-      flags: { toArray: () => flags },
+      flags: hasFlags ? { toArray: () => flags } : undefined,
     },
   };
 }
@@ -127,6 +128,12 @@ describe('computeRiskScore', () => {
     );
     expect(result.score).toBe(20); // 40 - 20
     expect(result.reasons.some((r) => r.includes('trusted public badge'))).toBe(true);
+  });
+
+  it('treats a missing flags object (e.g. an uncached/partial user) as no badges', () => {
+    const result = computeRiskScore(makeMember({ hasFlags: false }), makeGuildConfig(), 1, 0);
+    expect(result.score).toBe(0);
+    expect(result.reasons).toEqual(['No risk factors detected']);
   });
 
   it('clamps the score at 0 when discounts would push it negative', () => {
