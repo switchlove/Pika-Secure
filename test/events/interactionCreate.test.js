@@ -16,7 +16,11 @@ beforeEach(() => {
     handleCaptchaModalOpen: vi.fn(),
     handleCaptchaModalSubmit: vi.fn(),
   });
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
   interactionCreate = require('../../src/events/interactionCreate.js');
 });
 
@@ -50,7 +54,10 @@ describe('interactionCreate.execute', () => {
     });
 
     it('silently no-ops when the command is not found', async () => {
-      const interaction = makeInteraction({ isChatInputCommand: () => true, commandName: 'unknown' });
+      const interaction = makeInteraction({
+        isChatInputCommand: () => true,
+        commandName: 'unknown',
+      });
       interaction.client.commands.get.mockReturnValue(undefined);
 
       await expect(interactionCreate.execute(interaction)).resolves.toBeUndefined();
@@ -80,13 +87,19 @@ describe('interactionCreate.execute', () => {
 
   describe('modal submit interactions', () => {
     it('routes captcha:submit to handleCaptchaModalSubmit', async () => {
-      const interaction = makeInteraction({ isModalSubmit: () => true, customId: 'captcha:submit' });
+      const interaction = makeInteraction({
+        isModalSubmit: () => true,
+        customId: 'captcha:submit',
+      });
       await interactionCreate.execute(interaction);
       expect(flow.handleCaptchaModalSubmit).toHaveBeenCalledWith(interaction);
     });
 
     it('ignores an unrecognized modal customId', async () => {
-      const interaction = makeInteraction({ isModalSubmit: () => true, customId: 'something:else' });
+      const interaction = makeInteraction({
+        isModalSubmit: () => true,
+        customId: 'something:else',
+      });
       await interactionCreate.execute(interaction);
       expect(flow.handleCaptchaModalSubmit).not.toHaveBeenCalled();
     });
@@ -113,7 +126,11 @@ describe('interactionCreate.execute', () => {
     });
 
     it('uses followUp when the interaction was already deferred', async () => {
-      const interaction = makeInteraction({ isButton: () => true, customId: 'verify:start', deferred: true });
+      const interaction = makeInteraction({
+        isButton: () => true,
+        customId: 'verify:start',
+        deferred: true,
+      });
       flow.handleVerifyButtonClick.mockRejectedValue(new Error('flow blew up'));
 
       await interactionCreate.execute(interaction);
@@ -123,7 +140,11 @@ describe('interactionCreate.execute', () => {
     });
 
     it('uses followUp when the interaction was already replied', async () => {
-      const interaction = makeInteraction({ isButton: () => true, customId: 'verify:start', replied: true });
+      const interaction = makeInteraction({
+        isButton: () => true,
+        customId: 'verify:start',
+        replied: true,
+      });
       flow.handleVerifyButtonClick.mockRejectedValue(new Error('flow blew up'));
 
       await interactionCreate.execute(interaction);

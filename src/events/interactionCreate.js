@@ -3,7 +3,10 @@ const flow = require('../verification/flow');
 const logger = require('../utils/logger');
 
 async function replyError(interaction) {
-  const payload = { content: 'Something went wrong handling that. Please try again.', flags: MessageFlags.Ephemeral };
+  const payload = {
+    content: 'Something went wrong handling that. Please try again.',
+    flags: MessageFlags.Ephemeral,
+  };
   try {
     if (interaction.deferred || interaction.replied) {
       await interaction.followUp(payload);

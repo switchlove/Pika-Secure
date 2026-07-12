@@ -10,10 +10,12 @@ let auditLog;
 let riskAssessment;
 let joinBurstTracker;
 let avatarTracker;
+let avatarHash;
+let usernameTracker;
+let fastSolveTracker;
 let quarantine;
 let captcha;
 let modlog;
-let embeds;
 let logger;
 let flow;
 
@@ -22,6 +24,7 @@ const JOINED_EMBED = { sentinel: 'joined' };
 const VERIFIED_EMBED = { sentinel: 'verified' };
 const CAPTCHA_ESCALATED_EMBED = { sentinel: 'captcha-escalated' };
 const CAPTCHA_FAILED_EMBED = { sentinel: 'captcha-failed' };
+const FAST_SOLVE_FLAGGED_EMBED = { sentinel: 'fast-solve-flagged' };
 
 function baseGuildConfig(overrides = {}) {
   return {
@@ -33,6 +36,12 @@ function baseGuildConfig(overrides = {}) {
     captcha_risk_threshold: 50,
     hard_captcha_risk_threshold: 75,
     max_captcha_attempts: 3,
+    perceptual_avatar_hamming_threshold: 10,
+    username_similarity_window_seconds: 300,
+    username_similarity_distance_threshold: 2,
+    fast_solve_window_seconds: 300,
+    fast_solve_count_threshold: 3,
+    captcha_type: 'image',
     ...overrides,
   };
 }
@@ -40,7 +49,9 @@ function baseGuildConfig(overrides = {}) {
 beforeEach(() => {
   bustSrcRequireCache(require);
 
-  guildConfigMod = injectFakeModule(require, '../../src/database/guildConfig.js', { getGuildConfig: vi.fn() });
+  guildConfigMod = injectFakeModule(require, '../../src/database/guildConfig.js', {
+    getGuildConfig: vi.fn(),
+  });
 
   pendingVerifications = injectFakeModule(require, '../../src/database/pendingVerifications.js', {
     createPendingVerification: vi.fn(),
@@ -48,12 +59,17 @@ beforeEach(() => {
     markVerified: vi.fn(),
     escalateToCaptcha: vi.fn(),
     recordCaptchaFailure: vi.fn(),
+    bumpRiskScore: vi.fn(),
+    flagPendingVerification: vi.fn(),
   });
 
-  auditLog = injectFakeModule(require, '../../src/database/auditLog.js', { insertAuditLog: vi.fn() });
+  auditLog = injectFakeModule(require, '../../src/database/auditLog.js', {
+    insertAuditLog: vi.fn(),
+  });
 
   riskAssessment = injectFakeModule(require, '../../src/verification/riskAssessment.js', {
     computeRiskScore: vi.fn().mockReturnValue({ score: 10, reasons: ['low risk'] }),
+    FAST_SOLVE_RISK_POINTS: 20,
   });
 
   joinBurstTracker = injectFakeModule(require, '../../src/verification/joinBurstTracker.js', {
@@ -62,6 +78,19 @@ beforeEach(() => {
 
   avatarTracker = injectFakeModule(require, '../../src/verification/avatarTracker.js', {
     recordAvatar: vi.fn().mockReturnValue(0),
+    recordPerceptualHash: vi.fn().mockReturnValue(0),
+  });
+
+  avatarHash = injectFakeModule(require, '../../src/verification/avatarHash.js', {
+    computeAvatarHash: vi.fn().mockResolvedValue('perceptual-hash'),
+  });
+
+  usernameTracker = injectFakeModule(require, '../../src/verification/usernameTracker.js', {
+    recordUsername: vi.fn().mockReturnValue(0),
+  });
+
+  fastSolveTracker = injectFakeModule(require, '../../src/verification/fastSolveTracker.js', {
+    recordFastSolve: vi.fn().mockReturnValue(1),
   });
 
   quarantine = injectFakeModule(require, '../../src/verification/quarantine.js', {
@@ -70,22 +99,39 @@ beforeEach(() => {
   });
 
   captcha = injectFakeModule(require, '../../src/verification/captcha.js', {
-    generateImageCaptcha: vi.fn().mockReturnValue({ answer: 'ABC123', buffer: Buffer.from('fake-png') }),
+    generateChallenge: vi.fn().mockReturnValue({
+      type: 'image',
+      answer: 'ABC123',
+      buffer: Buffer.from('fake-png'),
+      prompt: null,
+    }),
+    pickCaptchaType: vi.fn().mockReturnValue('image'),
     pickDifficulty: vi.fn().mockReturnValue('normal'),
-    normalizeAnswer: vi.fn((v) => String(v || '').trim().toUpperCase()),
+    normalizeAnswer: vi.fn((v) =>
+      String(v || '')
+        .trim()
+        .toUpperCase(),
+    ),
   });
 
-  modlog = injectFakeModule(require, '../../src/modlog/modlog.js', { send: vi.fn().mockResolvedValue(undefined) });
+  modlog = injectFakeModule(require, '../../src/modlog/modlog.js', {
+    send: vi.fn().mockResolvedValue(undefined),
+  });
 
-  embeds = injectFakeModule(require, '../../src/modlog/embeds.js', {
+  injectFakeModule(require, '../../src/modlog/embeds.js', {
     unconfiguredEmbed: vi.fn().mockReturnValue(UNCONFIGURED_EMBED),
     joinedEmbed: vi.fn().mockReturnValue(JOINED_EMBED),
     verifiedEmbed: vi.fn().mockReturnValue(VERIFIED_EMBED),
     captchaEscalatedEmbed: vi.fn().mockReturnValue(CAPTCHA_ESCALATED_EMBED),
     captchaFailedEmbed: vi.fn().mockReturnValue(CAPTCHA_FAILED_EMBED),
+    fastSolveFlaggedEmbed: vi.fn().mockReturnValue(FAST_SOLVE_FLAGGED_EMBED),
   });
 
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
 
   flow = require('../../src/verification/flow.js');
 
@@ -102,7 +148,12 @@ function makeMember(overrides = {}) {
     id: 'user-1',
     guild: { id: 'guild-1' },
     client: {},
-    user: { avatar: 'hash-1', tag: 'user#0001' },
+    user: {
+      avatar: 'hash-1',
+      username: 'normaluser',
+      tag: 'user#0001',
+      avatarURL: vi.fn().mockReturnValue('https://cdn.example/avatar.png'),
+    },
     ...overrides,
   };
 }
@@ -133,7 +184,9 @@ describe('handleMemberJoin', () => {
   });
 
   it('also treats a missing verification_channel_id as unconfigured', async () => {
-    guildConfigMod.getGuildConfig.mockReturnValue(baseGuildConfig({ verification_channel_id: null }));
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseGuildConfig({ verification_channel_id: null }),
+    );
     await flow.handleMemberJoin(makeMember());
     expect(pendingVerifications.createPendingVerification).not.toHaveBeenCalled();
   });
@@ -147,7 +200,16 @@ describe('handleMemberJoin', () => {
 
     expect(joinBurstTracker.recordJoin).toHaveBeenCalledWith('guild-1', 60);
     expect(avatarTracker.recordAvatar).toHaveBeenCalledWith('guild-1', 'hash-1', 300);
-    expect(riskAssessment.computeRiskScore).toHaveBeenCalledWith(member, guildConfig, 1, 0);
+    expect(member.user.avatarURL).toHaveBeenCalledWith({ extension: 'png', size: 64 });
+    expect(avatarHash.computeAvatarHash).toHaveBeenCalledWith('https://cdn.example/avatar.png');
+    expect(avatarTracker.recordPerceptualHash).toHaveBeenCalledWith(
+      'guild-1',
+      'perceptual-hash',
+      300,
+      10,
+    );
+    expect(usernameTracker.recordUsername).toHaveBeenCalledWith('guild-1', 'normaluser', 300, 2);
+    expect(riskAssessment.computeRiskScore).toHaveBeenCalledWith(member, guildConfig, 1, 0, 0, 0);
 
     expect(pendingVerifications.createPendingVerification).toHaveBeenCalledWith({
       guildId: 'guild-1',
@@ -164,6 +226,36 @@ describe('handleMemberJoin', () => {
       reasons: ['low risk'],
     });
     expect(modlog.send).toHaveBeenCalledWith(member.client, guildConfig, JOINED_EMBED);
+  });
+
+  it('treats a failed perceptual-hash lookup as no signal without blocking the join', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(baseGuildConfig());
+    avatarHash.computeAvatarHash.mockRejectedValue(new Error('CDN timeout'));
+    const member = makeMember();
+
+    await flow.handleMemberJoin(member);
+
+    expect(logger.warn).toHaveBeenCalled();
+    expect(avatarTracker.recordPerceptualHash).not.toHaveBeenCalled();
+    expect(riskAssessment.computeRiskScore).toHaveBeenCalledWith(
+      member,
+      expect.any(Object),
+      1,
+      0,
+      0,
+      0,
+    );
+    expect(pendingVerifications.createPendingVerification).toHaveBeenCalled();
+  });
+
+  it('skips the perceptual-hash lookup entirely when the member has no avatar', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(baseGuildConfig());
+    const member = makeMember({ user: { avatar: null, username: 'normaluser' } });
+
+    await flow.handleMemberJoin(member);
+
+    expect(avatarHash.computeAvatarHash).not.toHaveBeenCalled();
+    expect(avatarTracker.recordPerceptualHash).not.toHaveBeenCalled();
   });
 
   it('continues (audit log + modlog) even when assigning the unverified role fails', async () => {
@@ -211,7 +303,10 @@ describe('handleVerifyButtonClick', () => {
   it('auto-verifies a low-risk pending member via the button', async () => {
     const guildConfig = baseGuildConfig({ captcha_risk_threshold: 50 });
     guildConfigMod.getGuildConfig.mockReturnValue(guildConfig);
-    pendingVerifications.getPendingVerification.mockReturnValue({ state: 'pending', risk_score: 20 });
+    pendingVerifications.getPendingVerification.mockReturnValue({
+      state: 'pending',
+      risk_score: 20,
+    });
     const interaction = makeInteraction();
 
     await flow.handleVerifyButtonClick(interaction);
@@ -239,7 +334,7 @@ describe('handleVerifyButtonClick', () => {
 
     await flow.handleVerifyButtonClick(interaction);
 
-    expect(captcha.generateImageCaptcha).not.toHaveBeenCalled();
+    expect(captcha.generateChallenge).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining('active captcha') }),
     );
@@ -258,10 +353,23 @@ describe('handleVerifyButtonClick', () => {
     await flow.handleVerifyButtonClick(interaction);
 
     expect(captcha.pickDifficulty).toHaveBeenCalledWith(80, 75);
-    expect(captcha.generateImageCaptcha).toHaveBeenCalledWith('normal');
-    expect(pendingVerifications.escalateToCaptcha).toHaveBeenCalledWith('guild-1', 'user-1', 'ABC123');
-    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'user-1', 'captcha_escalated');
-    expect(modlog.send).toHaveBeenCalledWith(interaction.client, guildConfig, CAPTCHA_ESCALATED_EMBED);
+    expect(captcha.pickCaptchaType).toHaveBeenCalledWith('image', 'normal');
+    expect(captcha.generateChallenge).toHaveBeenCalledWith('image', 'normal');
+    expect(pendingVerifications.escalateToCaptcha).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      'ABC123',
+      'image',
+    );
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'user-1', 'captcha_escalated', {
+      type: 'image',
+      difficulty: 'normal',
+    });
+    expect(modlog.send).toHaveBeenCalledWith(
+      interaction.client,
+      guildConfig,
+      CAPTCHA_ESCALATED_EMBED,
+    );
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({ files: expect.any(Array), components: expect.any(Array) }),
     );
@@ -269,13 +377,48 @@ describe('handleVerifyButtonClick', () => {
 
   it('escalates a pending member whose risk is at/above the captcha threshold', async () => {
     guildConfigMod.getGuildConfig.mockReturnValue(baseGuildConfig({ captcha_risk_threshold: 50 }));
-    pendingVerifications.getPendingVerification.mockReturnValue({ state: 'pending', risk_score: 50 });
+    pendingVerifications.getPendingVerification.mockReturnValue({
+      state: 'pending',
+      risk_score: 50,
+    });
     const interaction = makeInteraction();
 
     await flow.handleVerifyButtonClick(interaction);
 
-    expect(captcha.generateImageCaptcha).toHaveBeenCalled();
+    expect(captcha.generateChallenge).toHaveBeenCalled();
     expect(pendingVerifications.escalateToCaptcha).toHaveBeenCalled();
+  });
+
+  it('presents a math captcha (no image attachment) when the guild is configured for it', async () => {
+    const guildConfig = baseGuildConfig({ captcha_type: 'math' });
+    guildConfigMod.getGuildConfig.mockReturnValue(guildConfig);
+    pendingVerifications.getPendingVerification.mockReturnValue({
+      state: 'captcha',
+      updated_at: 1_000_000 - 6000,
+      risk_score: 80,
+    });
+    captcha.pickCaptchaType.mockReturnValue('math');
+    captcha.generateChallenge.mockReturnValue({
+      type: 'math',
+      answer: '9',
+      buffer: null,
+      prompt: 'What is 4 + 5?',
+    });
+    const interaction = makeInteraction();
+
+    await flow.handleVerifyButtonClick(interaction);
+
+    expect(captcha.pickCaptchaType).toHaveBeenCalledWith('math', 'normal');
+    expect(captcha.generateChallenge).toHaveBeenCalledWith('math', 'normal');
+    expect(pendingVerifications.escalateToCaptcha).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      '9',
+      'math',
+    );
+    const payload = interaction.reply.mock.calls[0][0];
+    expect(payload.files).toEqual([]);
+    expect(payload.embeds[0].data.description).toContain('What is 4 + 5?');
   });
 });
 
@@ -302,7 +445,10 @@ describe('handleCaptchaModalOpen', () => {
   });
 
   it('shows a modal sized to the captcha answer length', async () => {
-    pendingVerifications.getPendingVerification.mockReturnValue({ state: 'captcha', captcha_answer: 'ABCDEF' });
+    pendingVerifications.getPendingVerification.mockReturnValue({
+      state: 'captcha',
+      captcha_answer: 'ABCDEF',
+    });
     const interaction = makeInteraction();
 
     await flow.handleCaptchaModalOpen(interaction);
@@ -314,6 +460,24 @@ describe('handleCaptchaModalOpen', () => {
     const textInput = json.components[0].components[0];
     expect(textInput.min_length).toBe(6);
     expect(textInput.max_length).toBe(6);
+  });
+
+  it('shows a lenient-length modal for a math captcha', async () => {
+    pendingVerifications.getPendingVerification.mockReturnValue({
+      state: 'captcha',
+      captcha_answer: '42',
+      captcha_type: 'math',
+    });
+    const interaction = makeInteraction();
+
+    await flow.handleCaptchaModalOpen(interaction);
+
+    const modal = interaction.showModal.mock.calls[0][0];
+    const json = modal.toJSON();
+    const textInput = json.components[0].components[0];
+    expect(textInput.label).toBe('Your answer');
+    expect(textInput.min_length).toBe(1);
+    expect(textInput.max_length).toBe(10);
   });
 });
 
@@ -374,30 +538,78 @@ describe('handleCaptchaModalSubmit', () => {
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining('Correct!') }),
     );
+    expect(fastSolveTracker.recordFastSolve).not.toHaveBeenCalled();
+    expect(pendingVerifications.bumpRiskScore).not.toHaveBeenCalled();
   });
 
-  it('flags a fast solve under MIN_HUMAN_SOLVE_MS as fastSolve=true', async () => {
-    guildConfigMod.getGuildConfig.mockReturnValue(baseGuildConfig());
+  it('flags a fast solve under MIN_HUMAN_SOLVE_MS as fastSolve=true and bumps the risk score', async () => {
+    const guildConfig = baseGuildConfig({ fast_solve_count_threshold: 3 });
+    guildConfigMod.getGuildConfig.mockReturnValue(guildConfig);
     pendingVerifications.getPendingVerification.mockReturnValue({
       state: 'captcha',
       updated_at: 1_000_000 - 1100,
       captcha_answer: 'ABC123',
     });
     setSubmittedAnswer('ABC123');
+    fastSolveTracker.recordFastSolve.mockReturnValue(1);
     const interaction = makeInteraction();
 
     await flow.handleCaptchaModalSubmit(interaction);
 
+    expect(fastSolveTracker.recordFastSolve).toHaveBeenCalledWith('guild-1', 300);
+    expect(pendingVerifications.bumpRiskScore).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      20,
+      expect.arrayContaining([expect.stringContaining('100ms')]),
+    );
     expect(auditLog.insertAuditLog).toHaveBeenCalledWith(
       'guild-1',
       'user-1',
       'verified',
       expect.objectContaining({ fastSolve: true }),
     );
+    expect(pendingVerifications.flagPendingVerification).not.toHaveBeenCalled();
+  });
+
+  it('flags for manual review instead of verifying once fast solves exceed the threshold', async () => {
+    const guildConfig = baseGuildConfig({ fast_solve_count_threshold: 3 });
+    guildConfigMod.getGuildConfig.mockReturnValue(guildConfig);
+    pendingVerifications.getPendingVerification.mockReturnValue({
+      state: 'captcha',
+      updated_at: 1_000_000 - 1100,
+      captcha_answer: 'ABC123',
+    });
+    setSubmittedAnswer('ABC123');
+    fastSolveTracker.recordFastSolve.mockReturnValue(4);
+    const interaction = makeInteraction();
+
+    await flow.handleCaptchaModalSubmit(interaction);
+
+    expect(pendingVerifications.flagPendingVerification).toHaveBeenCalledWith('guild-1', 'user-1');
+    expect(quarantine.applyVerifiedRoles).not.toHaveBeenCalled();
+    expect(pendingVerifications.markVerified).not.toHaveBeenCalled();
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      'captcha_fast_solve_flagged',
+      { latencyMs: 1100, repeatFastSolveCount: 4 },
+    );
+    expect(modlog.send).toHaveBeenCalledWith(
+      interaction.client,
+      guildConfig,
+      FAST_SOLVE_FLAGGED_EMBED,
+    );
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('manual review') }),
+    );
   });
 
   it('regenerates a captcha on an incorrect answer with attempts remaining', async () => {
-    const guildConfig = baseGuildConfig({ max_captcha_attempts: 3, hard_captcha_risk_threshold: 75 });
+    const guildConfig = baseGuildConfig({
+      max_captcha_attempts: 3,
+      hard_captcha_risk_threshold: 75,
+    });
     guildConfigMod.getGuildConfig.mockReturnValue(guildConfig);
     pendingVerifications.getPendingVerification.mockReturnValue({
       state: 'captcha',
@@ -407,13 +619,26 @@ describe('handleCaptchaModalSubmit', () => {
       risk_score: 40,
     });
     setSubmittedAnswer('WRONG1');
-    captcha.generateImageCaptcha.mockReturnValue({ answer: 'NEWCODE', buffer: Buffer.from('new-png') });
+    captcha.generateChallenge.mockReturnValue({
+      type: 'image',
+      answer: 'NEWCODE',
+      buffer: Buffer.from('new-png'),
+      prompt: null,
+    });
     const interaction = makeInteraction();
 
     await flow.handleCaptchaModalSubmit(interaction);
 
-    expect(pendingVerifications.recordCaptchaFailure).toHaveBeenCalledWith('guild-1', 'user-1', 'NEWCODE', false);
-    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'user-1', 'captcha_failed', { attempts: 1 });
+    expect(pendingVerifications.recordCaptchaFailure).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      'NEWCODE',
+      false,
+      'image',
+    );
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'user-1', 'captcha_failed', {
+      attempts: 1,
+    });
     expect(modlog.send).toHaveBeenCalledWith(interaction.client, guildConfig, CAPTCHA_FAILED_EMBED);
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({ files: expect.any(Array) }),
@@ -432,15 +657,66 @@ describe('handleCaptchaModalSubmit', () => {
     });
     setSubmittedAnswer('WRONG1');
     const interaction = makeInteraction();
-    const callsBefore = captcha.generateImageCaptcha.mock.calls.length;
+    const callsBefore = captcha.generateChallenge.mock.calls.length;
 
     await flow.handleCaptchaModalSubmit(interaction);
 
-    expect(captcha.generateImageCaptcha.mock.calls.length).toBe(callsBefore);
-    expect(pendingVerifications.recordCaptchaFailure).toHaveBeenCalledWith('guild-1', 'user-1', null, true);
-    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'user-1', 'captcha_max_failed', { attempts: 3 });
+    expect(captcha.generateChallenge.mock.calls.length).toBe(callsBefore);
+    expect(pendingVerifications.recordCaptchaFailure).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      null,
+      true,
+      null,
+    );
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      'captcha_max_failed',
+      { attempts: 3 },
+    );
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining('too many failed attempts') }),
     );
+  });
+
+  it('re-picks the challenge type for the retry captcha based on guild config', async () => {
+    const guildConfig = baseGuildConfig({
+      captcha_type: 'math',
+      max_captcha_attempts: 3,
+      hard_captcha_risk_threshold: 75,
+    });
+    guildConfigMod.getGuildConfig.mockReturnValue(guildConfig);
+    pendingVerifications.getPendingVerification.mockReturnValue({
+      state: 'captcha',
+      updated_at: 1_000_000 - 2000,
+      captcha_answer: 'ABC123',
+      captcha_attempts: 0,
+      risk_score: 40,
+    });
+    setSubmittedAnswer('WRONG1');
+    captcha.pickCaptchaType.mockReturnValue('math');
+    captcha.generateChallenge.mockReturnValue({
+      type: 'math',
+      answer: '7',
+      buffer: null,
+      prompt: 'What is 3 + 4?',
+    });
+    const interaction = makeInteraction();
+
+    await flow.handleCaptchaModalSubmit(interaction);
+
+    expect(captcha.pickCaptchaType).toHaveBeenCalledWith('math', 'normal');
+    expect(captcha.generateChallenge).toHaveBeenCalledWith('math', 'normal');
+    expect(pendingVerifications.recordCaptchaFailure).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      '7',
+      false,
+      'math',
+    );
+    const payload = interaction.reply.mock.calls[0][0];
+    expect(payload.files).toEqual([]);
+    expect(payload.embeds[0].data.description).toContain('What is 3 + 4?');
   });
 });

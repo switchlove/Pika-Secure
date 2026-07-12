@@ -11,7 +11,10 @@ async function send(client, guildConfig, member) {
   try {
     const channel = await client.channels.fetch(guildConfig.welcome_channel_id);
     if (channel && channel.isTextBased()) {
-      await channel.send({ content: renderMessage(guildConfig.welcome_message, member) });
+      await channel.send({
+        content: renderMessage(guildConfig.welcome_message, member),
+        allowedMentions: { parse: ['users'] },
+      });
     }
   } catch (err) {
     logger.warn('Failed to send welcome message:', err.message);

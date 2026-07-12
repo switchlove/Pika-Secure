@@ -10,7 +10,10 @@ let originalEnv = null;
 
 export function setupTempDb() {
   originalEnv = { ...process.env };
-  const dbPath = path.join(os.tmpdir(), `pika-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+  const dbPath = path.join(
+    os.tmpdir(),
+    `pika-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`,
+  );
   process.env.DISCORD_TOKEN = 'test-token';
   process.env.DISCORD_CLIENT_ID = 'test-client-id';
   process.env.DATABASE_PATH = dbPath;

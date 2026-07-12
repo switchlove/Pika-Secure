@@ -58,7 +58,10 @@ describe('updateGuildConfig', () => {
   it('no-ops (never builds an UPDATE) when every field is undefined', () => {
     getGuildConfig('guild-noop');
     const before = getGuildConfig('guild-noop');
-    const after = updateGuildConfig('guild-noop', { unverified_role_id: undefined, foo: undefined });
+    const after = updateGuildConfig('guild-noop', {
+      unverified_role_id: undefined,
+      foo: undefined,
+    });
     expect(after).toEqual(before);
   });
 
@@ -93,5 +96,26 @@ describe('updateGuildConfig', () => {
     });
     expect(updated.welcome_channel_id).toBe('chan-welcome');
     expect(updated.welcome_message).toBe('hey {user}!');
+  });
+
+  it('defaults and persists the fast-solve threshold fields', () => {
+    const defaults = getGuildConfig('guild-fastsolve-defaults');
+    expect(defaults.fast_solve_count_threshold).toBe(3);
+    expect(defaults.fast_solve_window_seconds).toBe(300);
+
+    const updated = updateGuildConfig('guild-fastsolve-defaults', {
+      fast_solve_count_threshold: 5,
+      fast_solve_window_seconds: 120,
+    });
+    expect(updated.fast_solve_count_threshold).toBe(5);
+    expect(updated.fast_solve_window_seconds).toBe(120);
+  });
+
+  it('defaults captcha_type to "image" and persists an updated value', () => {
+    const defaults = getGuildConfig('guild-captcha-type-defaults');
+    expect(defaults.captcha_type).toBe('image');
+
+    const updated = updateGuildConfig('guild-captcha-type-defaults', { captcha_type: 'math' });
+    expect(updated.captcha_type).toBe('math');
   });
 });

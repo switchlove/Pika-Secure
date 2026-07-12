@@ -25,7 +25,14 @@ const findExpiredStmt = db.prepare(`
   WHERE state IN ('pending', 'captcha', 'flagged') AND deadline_at <= ?
 `);
 
-function createPendingVerification({ guildId, userId, riskScore, riskReasons, deadlineAt, joinedAt }) {
+function createPendingVerification({
+  guildId,
+  userId,
+  riskScore,
+  riskReasons,
+  deadlineAt,
+  joinedAt,
+}) {
   const now = Date.now();
   upsertStmt.run(
     guildId,
@@ -50,20 +57,39 @@ function markVerified(guildId, userId) {
   ).run(Date.now(), guildId, userId);
 }
 
-function escalateToCaptcha(guildId, userId, captchaAnswer) {
+function escalateToCaptcha(guildId, userId, captchaAnswer, captchaType = null) {
   db.prepare(
     `UPDATE pending_verifications
-     SET state = 'captcha', captcha_answer = ?, updated_at = ?
+     SET state = 'captcha', captcha_answer = ?, captcha_type = ?, updated_at = ?
      WHERE guild_id = ? AND user_id = ?`,
-  ).run(captchaAnswer, Date.now(), guildId, userId);
+  ).run(captchaAnswer, captchaType, Date.now(), guildId, userId);
 }
 
-function recordCaptchaFailure(guildId, userId, nextAnswer, flagged) {
+function recordCaptchaFailure(guildId, userId, nextAnswer, flagged, nextType = null) {
   db.prepare(
     `UPDATE pending_verifications
-     SET state = ?, captcha_answer = ?, captcha_attempts = captcha_attempts + 1, updated_at = ?
+     SET state = ?, captcha_answer = ?, captcha_type = ?, captcha_attempts = captcha_attempts + 1, updated_at = ?
      WHERE guild_id = ? AND user_id = ?`,
-  ).run(flagged ? 'flagged' : 'captcha', nextAnswer, Date.now(), guildId, userId);
+  ).run(flagged ? 'flagged' : 'captcha', nextAnswer, nextType, Date.now(), guildId, userId);
+}
+
+function bumpRiskScore(guildId, userId, additionalScore, additionalReasons) {
+  const record = getStmt.get(guildId, userId);
+  if (!record) return;
+
+  const newScore = Math.max(0, Math.min(100, record.risk_score + additionalScore));
+  const priorReasons = record.risk_reasons ? JSON.parse(record.risk_reasons) : [];
+  const newReasons = [...priorReasons, ...additionalReasons];
+
+  db.prepare(
+    'UPDATE pending_verifications SET risk_score = ?, risk_reasons = ?, updated_at = ? WHERE guild_id = ? AND user_id = ?',
+  ).run(newScore, JSON.stringify(newReasons), Date.now(), guildId, userId);
+}
+
+function flagPendingVerification(guildId, userId) {
+  db.prepare(
+    "UPDATE pending_verifications SET state = 'flagged', updated_at = ? WHERE guild_id = ? AND user_id = ?",
+  ).run(Date.now(), guildId, userId);
 }
 
 function markKicked(id) {
@@ -77,12 +103,24 @@ function findExpired(now = Date.now()) {
   return findExpiredStmt.all(now);
 }
 
+function findFlagged(guildId, limit = 20) {
+  const cappedLimit = Math.min(Math.max(1, limit), 50);
+  return db
+    .prepare(
+      "SELECT * FROM pending_verifications WHERE guild_id = ? AND state = 'flagged' ORDER BY updated_at DESC LIMIT ?",
+    )
+    .all(guildId, cappedLimit);
+}
+
 module.exports = {
   createPendingVerification,
   getPendingVerification,
   markVerified,
   escalateToCaptcha,
   recordCaptchaFailure,
+  bumpRiskScore,
+  flagPendingVerification,
   markKicked,
   findExpired,
+  findFlagged,
 };

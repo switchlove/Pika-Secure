@@ -9,7 +9,11 @@ let modlog;
 
 beforeEach(() => {
   bustSrcRequireCache(require);
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
   modlog = require('../../src/modlog/modlog.js');
 });
 
@@ -20,7 +24,9 @@ function makeClient(fetchImpl) {
 function makeChannel({ isTextBased = true, sendResolves = true } = {}) {
   return {
     isTextBased: () => isTextBased,
-    send: sendResolves ? vi.fn().mockResolvedValue(undefined) : vi.fn().mockRejectedValue(new Error('send failed')),
+    send: sendResolves
+      ? vi.fn().mockResolvedValue(undefined)
+      : vi.fn().mockRejectedValue(new Error('send failed')),
   };
 }
 
@@ -53,13 +59,17 @@ describe('modlog.send', () => {
 
   it('does not throw when the channel fetch resolves to null/undefined', async () => {
     const client = makeClient(() => Promise.resolve(null));
-    await expect(modlog.send(client, { mod_log_channel_id: 'chan-1' }, {})).resolves.toBeUndefined();
+    await expect(
+      modlog.send(client, { mod_log_channel_id: 'chan-1' }, {}),
+    ).resolves.toBeUndefined();
   });
 
   it('swallows a rejected channel fetch and logs a warning', async () => {
     const client = makeClient(() => Promise.reject(new Error('no access')));
 
-    await expect(modlog.send(client, { mod_log_channel_id: 'chan-1' }, {})).resolves.toBeUndefined();
+    await expect(
+      modlog.send(client, { mod_log_channel_id: 'chan-1' }, {}),
+    ).resolves.toBeUndefined();
     expect(logger.warn).toHaveBeenCalledWith('Failed to send mod-log message:', 'no access');
   });
 
@@ -67,7 +77,9 @@ describe('modlog.send', () => {
     const channel = makeChannel({ sendResolves: false });
     const client = makeClient(() => Promise.resolve(channel));
 
-    await expect(modlog.send(client, { mod_log_channel_id: 'chan-1' }, {})).resolves.toBeUndefined();
+    await expect(
+      modlog.send(client, { mod_log_channel_id: 'chan-1' }, {}),
+    ).resolves.toBeUndefined();
     expect(logger.warn).toHaveBeenCalledWith('Failed to send mod-log message:', 'send failed');
   });
 });

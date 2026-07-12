@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRequire } from 'node:module';
+import { GuildVerificationLevel } from 'discord.js';
 import { bustSrcRequireCache, injectFakeModule } from '../helpers/moduleCache.js';
 
 const require = createRequire(import.meta.url);
 
 let guildConfigMod;
 let auditLog;
+let pendingVerifications;
 let permissions;
 let quarantine;
 let logger;
@@ -13,6 +15,8 @@ let setup;
 
 const GATE_PAYLOAD = { sentinel: 'gate-payload' };
 const BAIT_PAYLOAD = { sentinel: 'bait-payload' };
+const FLAGGED_LIST_EMBED = { sentinel: 'flagged-list' };
+const AUDIT_LOG_LIST_EMBED = { sentinel: 'audit-log-list' };
 
 function baseConfig(overrides = {}) {
   return {
@@ -33,6 +37,13 @@ function baseConfig(overrides = {}) {
     avatar_reuse_count_threshold: 3,
     avatar_reuse_window_seconds: 300,
     hard_captcha_risk_threshold: 75,
+    perceptual_avatar_hamming_threshold: 10,
+    username_similarity_count_threshold: 3,
+    username_similarity_window_seconds: 300,
+    username_similarity_distance_threshold: 2,
+    fast_solve_count_threshold: 3,
+    fast_solve_window_seconds: 300,
+    captcha_type: 'image',
     admin_role_ids: [],
     ...overrides,
   };
@@ -46,7 +57,19 @@ beforeEach(() => {
     updateGuildConfig: vi.fn().mockReturnValue(baseConfig()),
   });
 
-  auditLog = injectFakeModule(require, '../../src/database/auditLog.js', { insertAuditLog: vi.fn() });
+  auditLog = injectFakeModule(require, '../../src/database/auditLog.js', {
+    insertAuditLog: vi.fn(),
+    queryAuditLog: vi.fn().mockReturnValue([]),
+  });
+
+  pendingVerifications = injectFakeModule(require, '../../src/database/pendingVerifications.js', {
+    findFlagged: vi.fn().mockReturnValue([]),
+  });
+
+  injectFakeModule(require, '../../src/modlog/embeds.js', {
+    flaggedListEmbed: vi.fn().mockReturnValue(FLAGGED_LIST_EMBED),
+    auditLogListEmbed: vi.fn().mockReturnValue(AUDIT_LOG_LIST_EMBED),
+  });
 
   permissions = injectFakeModule(require, '../../src/utils/permissions.js', {
     canManageBot: vi.fn().mockReturnValue(true),
@@ -61,14 +84,27 @@ beforeEach(() => {
     HONEYPOT_BAIT_EMOJI: '🎉',
   });
 
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
 
   setup = require('../../src/commands/setup.js');
 });
 
-function makeInteraction({ subGroup = null, sub, roleOptions = {}, channelOptions = {}, integerOptions = {} } = {}) {
+function makeInteraction({
+  subGroup = null,
+  sub,
+  roleOptions = {},
+  channelOptions = {},
+  integerOptions = {},
+  stringOptions = {},
+  userOptions = {},
+  verificationLevel = GuildVerificationLevel.Medium,
+} = {}) {
   return {
-    guild: { id: 'guild-1', channels: { fetch: vi.fn() } },
+    guild: { id: 'guild-1', channels: { fetch: vi.fn() }, verificationLevel },
     member: { id: 'admin-member' },
     user: { id: 'admin-user' },
     options: {
@@ -77,6 +113,8 @@ function makeInteraction({ subGroup = null, sub, roleOptions = {}, channelOption
       getRole: vi.fn((name) => roleOptions[name]),
       getChannel: vi.fn((name) => channelOptions[name]),
       getInteger: vi.fn((name) => (name in integerOptions ? integerOptions[name] : null)),
+      getString: vi.fn((name) => (name in stringOptions ? stringOptions[name] : null)),
+      getUser: vi.fn((name) => userOptions[name]),
     },
     reply: vi.fn().mockResolvedValue(undefined),
   };
@@ -109,7 +147,9 @@ describe('execute — admins group', () => {
 
     await setup.execute(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ embeds: expect.any(Array) }));
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ embeds: expect.any(Array) }),
+    );
     expect(guildConfigMod.updateGuildConfig).not.toHaveBeenCalled();
   });
 
@@ -160,7 +200,9 @@ describe('execute — admins group', () => {
   });
 
   it('adds a new admin role', async () => {
-    guildConfigMod.getGuildConfig.mockReturnValue(baseConfig({ admin_role_ids: ['role-existing'] }));
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ admin_role_ids: ['role-existing'] }),
+    );
     const interaction = makeInteraction({
       subGroup: 'admins',
       sub: 'add',
@@ -178,7 +220,9 @@ describe('execute — admins group', () => {
   });
 
   it('removes an admin role', async () => {
-    guildConfigMod.getGuildConfig.mockReturnValue(baseConfig({ admin_role_ids: ['role-a', 'role-b'] }));
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ admin_role_ids: ['role-a', 'role-b'] }),
+    );
     const interaction = makeInteraction({
       subGroup: 'admins',
       sub: 'remove',
@@ -187,7 +231,9 @@ describe('execute — admins group', () => {
 
     await setup.execute(interaction);
 
-    expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledWith('guild-1', { admin_role_ids: ['role-b'] });
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledWith('guild-1', {
+      admin_role_ids: ['role-b'],
+    });
     expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'admin-user', 'setup_changed', {
       admin_roles_removed: 'role-a',
     });
@@ -210,14 +256,20 @@ describe('execute — roles', () => {
       unverified_role_id: 'role-u',
       verified_role_id: 'role-v',
     });
-    expect(quarantine.syncChannelPermissions).toHaveBeenCalledWith(interaction.guild, expect.any(Object));
+    expect(quarantine.syncChannelPermissions).toHaveBeenCalledWith(
+      interaction.guild,
+      expect.any(Object),
+    );
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({ content: undefined, embeds: expect.any(Array) }),
     );
   });
 
   it('passes verified_role_id as undefined when the optional role is omitted', async () => {
-    const interaction = makeInteraction({ sub: 'roles', roleOptions: { unverified: { id: 'role-u' } } });
+    const interaction = makeInteraction({
+      sub: 'roles',
+      roleOptions: { unverified: { id: 'role-u' } },
+    });
 
     await setup.execute(interaction);
 
@@ -229,7 +281,10 @@ describe('execute — roles', () => {
 
   it('surfaces a permission warning when syncChannelPermissions reports failures', async () => {
     quarantine.syncChannelPermissions.mockResolvedValue(['verification channel (<#x>): no access']);
-    const interaction = makeInteraction({ sub: 'roles', roleOptions: { unverified: { id: 'role-u' } } });
+    const interaction = makeInteraction({
+      sub: 'roles',
+      roleOptions: { unverified: { id: 'role-u' } },
+    });
 
     await setup.execute(interaction);
 
@@ -241,7 +296,10 @@ describe('execute — roles', () => {
 
 describe('execute — channels', () => {
   it('sets channels, syncs permissions, and posts the gate message', async () => {
-    const updatedConfig = baseConfig({ verification_channel_id: 'chan-v', mod_log_channel_id: 'chan-m' });
+    const updatedConfig = baseConfig({
+      verification_channel_id: 'chan-v',
+      mod_log_channel_id: 'chan-m',
+    });
     guildConfigMod.updateGuildConfig.mockReturnValue(updatedConfig);
     const gateMessage = { id: 'gate-msg-1' };
     const verificationChannel = { id: 'chan-v', send: vi.fn().mockResolvedValue(gateMessage) };
@@ -257,12 +315,17 @@ describe('execute — channels', () => {
       mod_log_channel_id: 'chan-m',
     });
     expect(verificationChannel.send).toHaveBeenCalledWith(GATE_PAYLOAD);
-    expect(guildConfigMod.updateGuildConfig).toHaveBeenNthCalledWith(2, 'guild-1', { gate_message_id: 'gate-msg-1' });
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenNthCalledWith(2, 'guild-1', {
+      gate_message_id: 'gate-msg-1',
+    });
     expect(guildConfigMod.getGuildConfig).toHaveBeenCalledTimes(2);
   });
 
   it('still replies successfully when posting the gate message fails', async () => {
-    const verificationChannel = { id: 'chan-v', send: vi.fn().mockRejectedValue(new Error('no perms')) };
+    const verificationChannel = {
+      id: 'chan-v',
+      send: vi.fn().mockRejectedValue(new Error('no perms')),
+    };
     const interaction = makeInteraction({
       sub: 'channels',
       channelOptions: { verification: verificationChannel, modlog: { id: 'chan-m' } },
@@ -272,7 +335,9 @@ describe('execute — channels', () => {
 
     expect(logger.error).toHaveBeenCalled();
     expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledTimes(1);
-    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ embeds: expect.any(Array) }));
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ embeds: expect.any(Array) }),
+    );
   });
 });
 
@@ -281,14 +346,20 @@ describe('execute — honeypot', () => {
     const baitMessage = { id: 'bait-msg-1', react: vi.fn().mockResolvedValue(undefined) };
     const honeypotChannel = { id: 'chan-h', send: vi.fn().mockResolvedValue(baitMessage) };
     guildConfigMod.updateGuildConfig.mockReturnValue(baseConfig({ honeypot_channel_id: 'chan-h' }));
-    const interaction = makeInteraction({ sub: 'honeypot', channelOptions: { channel: honeypotChannel } });
+    const interaction = makeInteraction({
+      sub: 'honeypot',
+      channelOptions: { channel: honeypotChannel },
+    });
 
     await setup.execute(interaction);
 
     expect(guildConfigMod.updateGuildConfig).toHaveBeenNthCalledWith(1, 'guild-1', {
       honeypot_channel_id: 'chan-h',
     });
-    expect(quarantine.syncHoneypotPermissions).toHaveBeenCalledWith(interaction.guild, expect.any(Object));
+    expect(quarantine.syncHoneypotPermissions).toHaveBeenCalledWith(
+      interaction.guild,
+      expect.any(Object),
+    );
     expect(honeypotChannel.send).toHaveBeenCalledWith(BAIT_PAYLOAD);
     expect(baitMessage.react).toHaveBeenCalledWith('🎉');
     expect(guildConfigMod.updateGuildConfig).toHaveBeenNthCalledWith(2, 'guild-1', {
@@ -297,22 +368,40 @@ describe('execute — honeypot', () => {
   });
 
   it('still replies successfully when posting the bait message fails', async () => {
-    const honeypotChannel = { id: 'chan-h', send: vi.fn().mockRejectedValue(new Error('no perms')) };
-    const interaction = makeInteraction({ sub: 'honeypot', channelOptions: { channel: honeypotChannel } });
+    const honeypotChannel = {
+      id: 'chan-h',
+      send: vi.fn().mockRejectedValue(new Error('no perms')),
+    };
+    const interaction = makeInteraction({
+      sub: 'honeypot',
+      channelOptions: { channel: honeypotChannel },
+    });
 
     await setup.execute(interaction);
 
     expect(logger.error).toHaveBeenCalled();
     expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledTimes(1);
-    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ embeds: expect.any(Array) }));
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ embeds: expect.any(Array) }),
+    );
   });
 
   it('skips refreshing the gate message when no gate message exists yet', async () => {
     guildConfigMod.updateGuildConfig.mockReturnValue(
-      baseConfig({ honeypot_channel_id: 'chan-h', verification_channel_id: null, gate_message_id: null }),
+      baseConfig({
+        honeypot_channel_id: 'chan-h',
+        verification_channel_id: null,
+        gate_message_id: null,
+      }),
     );
-    const honeypotChannel = { id: 'chan-h', send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }) };
-    const interaction = makeInteraction({ sub: 'honeypot', channelOptions: { channel: honeypotChannel } });
+    const honeypotChannel = {
+      id: 'chan-h',
+      send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }),
+    };
+    const interaction = makeInteraction({
+      sub: 'honeypot',
+      channelOptions: { channel: honeypotChannel },
+    });
 
     await setup.execute(interaction);
 
@@ -321,12 +410,22 @@ describe('execute — honeypot', () => {
 
   it('refreshes an existing gate message when both channel and message id are set', async () => {
     guildConfigMod.updateGuildConfig.mockReturnValue(
-      baseConfig({ honeypot_channel_id: 'chan-h', verification_channel_id: 'chan-v', gate_message_id: 'gate-1' }),
+      baseConfig({
+        honeypot_channel_id: 'chan-h',
+        verification_channel_id: 'chan-v',
+        gate_message_id: 'gate-1',
+      }),
     );
-    const honeypotChannel = { id: 'chan-h', send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }) };
+    const honeypotChannel = {
+      id: 'chan-h',
+      send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }),
+    };
     const gateMessage = { edit: vi.fn().mockResolvedValue(undefined) };
     const verificationChannel = { messages: { fetch: vi.fn().mockResolvedValue(gateMessage) } };
-    const interaction = makeInteraction({ sub: 'honeypot', channelOptions: { channel: honeypotChannel } });
+    const interaction = makeInteraction({
+      sub: 'honeypot',
+      channelOptions: { channel: honeypotChannel },
+    });
     interaction.guild.channels.fetch.mockResolvedValue(verificationChannel);
 
     await setup.execute(interaction);
@@ -338,15 +437,27 @@ describe('execute — honeypot', () => {
 
   it('logs and continues when refreshing the gate message fails', async () => {
     guildConfigMod.updateGuildConfig.mockReturnValue(
-      baseConfig({ honeypot_channel_id: 'chan-h', verification_channel_id: 'chan-v', gate_message_id: 'gate-1' }),
+      baseConfig({
+        honeypot_channel_id: 'chan-h',
+        verification_channel_id: 'chan-v',
+        gate_message_id: 'gate-1',
+      }),
     );
-    const honeypotChannel = { id: 'chan-h', send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }) };
-    const interaction = makeInteraction({ sub: 'honeypot', channelOptions: { channel: honeypotChannel } });
+    const honeypotChannel = {
+      id: 'chan-h',
+      send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }),
+    };
+    const interaction = makeInteraction({
+      sub: 'honeypot',
+      channelOptions: { channel: honeypotChannel },
+    });
     interaction.guild.channels.fetch.mockRejectedValue(new Error('channel gone'));
 
     await expect(setup.execute(interaction)).resolves.toBeUndefined();
     expect(logger.error).toHaveBeenCalled();
-    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ embeds: expect.any(Array) }));
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ embeds: expect.any(Array) }),
+    );
   });
 });
 
@@ -364,7 +475,14 @@ describe('execute — thresholds', () => {
         hard_captcha_risk_threshold: 80,
         avatar_reuse_count_threshold: 4,
         avatar_reuse_window_seconds: 400,
+        avatar_hamming_threshold: 12,
+        username_similarity_count: 4,
+        username_similarity_window: 200,
+        username_similarity_distance: 3,
+        fast_solve_count: 6,
+        fast_solve_window_seconds: 240,
       },
+      stringOptions: { captcha_type: 'math' },
     });
 
     await setup.execute(interaction);
@@ -379,6 +497,13 @@ describe('execute — thresholds', () => {
       hard_captcha_risk_threshold: 80,
       avatar_reuse_count_threshold: 4,
       avatar_reuse_window_seconds: 400,
+      perceptual_avatar_hamming_threshold: 12,
+      username_similarity_count_threshold: 4,
+      username_similarity_window_seconds: 200,
+      username_similarity_distance_threshold: 3,
+      fast_solve_count_threshold: 6,
+      fast_solve_window_seconds: 240,
+      captcha_type: 'math',
     });
   });
 
@@ -397,6 +522,13 @@ describe('execute — thresholds', () => {
       hard_captcha_risk_threshold: undefined,
       avatar_reuse_count_threshold: undefined,
       avatar_reuse_window_seconds: undefined,
+      perceptual_avatar_hamming_threshold: undefined,
+      username_similarity_count_threshold: undefined,
+      username_similarity_window_seconds: undefined,
+      username_similarity_distance_threshold: undefined,
+      fast_solve_count_threshold: undefined,
+      fast_solve_window_seconds: undefined,
+      captcha_type: undefined,
     });
   });
 });
@@ -407,13 +539,19 @@ describe('execute — view', () => {
 
     await setup.execute(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ embeds: expect.any(Array) }));
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ embeds: expect.any(Array) }),
+    );
     expect(guildConfigMod.getGuildConfig).toHaveBeenCalledTimes(2);
   });
 
   it('renders configured channels as mentions rather than "Not set"', async () => {
     guildConfigMod.getGuildConfig.mockReturnValue(
-      baseConfig({ verification_channel_id: 'chan-v', mod_log_channel_id: 'chan-m', honeypot_channel_id: 'chan-h' }),
+      baseConfig({
+        verification_channel_id: 'chan-v',
+        mod_log_channel_id: 'chan-m',
+        honeypot_channel_id: 'chan-h',
+      }),
     );
     const interaction = makeInteraction({ sub: 'view' });
 
@@ -424,6 +562,103 @@ describe('execute — view', () => {
     expect(fields.find((f) => f.name === 'Verification channel').value).toBe('<#chan-v>');
     expect(fields.find((f) => f.name === 'Mod-log channel').value).toBe('<#chan-m>');
     expect(fields.find((f) => f.name === 'Honeypot channel').value).toBe('<#chan-h>');
+  });
+
+  it('warns when the server verification level is low', async () => {
+    const interaction = makeInteraction({
+      sub: 'view',
+      verificationLevel: GuildVerificationLevel.Low,
+    });
+
+    await setup.execute(interaction);
+
+    const embed = interaction.reply.mock.calls[0][0].embeds[0];
+    const fields = embed.data.fields;
+    expect(fields.some((f) => f.name.includes('Verification Level is low'))).toBe(true);
+  });
+
+  it('does not warn when the server verification level is not low', async () => {
+    const interaction = makeInteraction({
+      sub: 'view',
+      verificationLevel: GuildVerificationLevel.High,
+    });
+
+    await setup.execute(interaction);
+
+    const embed = interaction.reply.mock.calls[0][0].embeds[0];
+    const fields = embed.data.fields;
+    expect(fields.some((f) => f.name.includes('Verification Level is low'))).toBe(false);
+  });
+});
+
+describe('execute — review group', () => {
+  it('rejects when the member cannot manage the bot', async () => {
+    permissions.canManageBot.mockReturnValue(false);
+    const interaction = makeInteraction({ subGroup: 'review', sub: 'flagged' });
+
+    await setup.execute(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('Manage Server') }),
+    );
+    expect(pendingVerifications.findFlagged).not.toHaveBeenCalled();
+    expect(auditLog.queryAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('replies with the flagged-list embed using the default limit', async () => {
+    const interaction = makeInteraction({ subGroup: 'review', sub: 'flagged' });
+
+    await setup.execute(interaction);
+
+    expect(pendingVerifications.findFlagged).toHaveBeenCalledWith('guild-1', 20);
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ embeds: [FLAGGED_LIST_EMBED] }),
+    );
+  });
+
+  it('passes a custom limit through to findFlagged', async () => {
+    const interaction = makeInteraction({
+      subGroup: 'review',
+      sub: 'flagged',
+      integerOptions: { limit: 5 },
+    });
+
+    await setup.execute(interaction);
+
+    expect(pendingVerifications.findFlagged).toHaveBeenCalledWith('guild-1', 5);
+  });
+
+  it('replies with the audit-log embed, passing filters and limit through', async () => {
+    const interaction = makeInteraction({
+      subGroup: 'review',
+      sub: 'log',
+      stringOptions: { event_type: 'verified' },
+      userOptions: { user: { id: 'user-9' } },
+      integerOptions: { limit: 10 },
+    });
+
+    await setup.execute(interaction);
+
+    expect(auditLog.queryAuditLog).toHaveBeenCalledWith('guild-1', {
+      eventType: 'verified',
+      userId: 'user-9',
+      limit: 10,
+    });
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ embeds: [AUDIT_LOG_LIST_EMBED] }),
+    );
+  });
+
+  it('omits eventType/userId and uses the default limit when not provided', async () => {
+    const interaction = makeInteraction({ subGroup: 'review', sub: 'log' });
+
+    await setup.execute(interaction);
+
+    expect(auditLog.queryAuditLog).toHaveBeenCalledWith('guild-1', {
+      eventType: undefined,
+      userId: undefined,
+      limit: 20,
+    });
   });
 });
 
@@ -438,6 +673,14 @@ describe('execute — unrecognized subcommands', () => {
 
   it('returns without replying for an unrecognized admins subcommand', async () => {
     const interaction = makeInteraction({ subGroup: 'admins', sub: 'not-a-real-subcommand' });
+
+    await expect(setup.execute(interaction)).resolves.toBeUndefined();
+
+    expect(interaction.reply).not.toHaveBeenCalled();
+  });
+
+  it('returns without replying for an unrecognized review subcommand', async () => {
+    const interaction = makeInteraction({ subGroup: 'review', sub: 'not-a-real-subcommand' });
 
     await expect(setup.execute(interaction)).resolves.toBeUndefined();
 

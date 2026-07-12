@@ -1,17 +1,28 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import tracker from '../../src/verification/joinBurstTracker.js';
+import { createRequire } from 'node:module';
+import { setupTempDb, teardownTempDb, bustSrcRequireCache } from '../helpers/tempDb.js';
 
-const { recordJoin } = tracker;
+const require = createRequire(import.meta.url);
+
+let dbPath;
+let db;
+let recordJoin;
+
+beforeEach(() => {
+  dbPath = setupTempDb();
+  bustSrcRequireCache(require);
+  db = require('../../src/database/db.js');
+  ({ recordJoin } = require('../../src/verification/joinBurstTracker.js'));
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  db.close();
+  teardownTempDb(dbPath);
+});
 
 describe('recordJoin', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   it('counts a single join as 1', () => {
     expect(recordJoin('guild-a', 60)).toBe(1);
   });

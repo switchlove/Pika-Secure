@@ -10,9 +10,11 @@ let messageCreate;
 
 beforeEach(() => {
   bustSrcRequireCache(require);
-  guildConfig = injectFakeModule(require, '../../src/database/guildConfig.js', { getGuildConfig: vi.fn() });
+  guildConfig = injectFakeModule(require, '../../src/database/guildConfig.js', {
+    getGuildConfig: vi.fn(),
+  });
   honeypot = injectFakeModule(require, '../../src/verification/honeypot.js', {
-    STAFF_EXEMPT_PERMISSIONS: ['exempt-flags'],
+    STAFF_EXEMPT_PERMISSIONS: ['flag-a', 'flag-b'],
     triggerHoneypot: vi.fn(),
   });
   messageCreate = require('../../src/events/messageCreate.js');
@@ -67,8 +69,27 @@ describe('messageCreate.execute', () => {
 
     await messageCreate.execute(message);
 
-    expect(message.member.permissions.has).toHaveBeenCalledWith(['exempt-flags'], true);
     expect(honeypot.triggerHoneypot).not.toHaveBeenCalled();
+  });
+
+  it('exempts a member who has only one of the exempt permissions', async () => {
+    guildConfig.getGuildConfig.mockReturnValue({ honeypot_channel_id: 'chan-1' });
+    const message = makeMessage();
+    message.member.permissions.has.mockImplementation((flag) => flag === 'flag-b');
+
+    await messageCreate.execute(message);
+
+    expect(honeypot.triggerHoneypot).not.toHaveBeenCalled();
+  });
+
+  it('does not exempt a member who has none of the exempt permissions', async () => {
+    guildConfig.getGuildConfig.mockReturnValue({ honeypot_channel_id: 'chan-1' });
+    const message = makeMessage();
+    message.member.permissions.has.mockReturnValue(false);
+
+    await messageCreate.execute(message);
+
+    expect(honeypot.triggerHoneypot).toHaveBeenCalled();
   });
 
   it('triggers the honeypot for a non-exempt member posting in the honeypot channel', async () => {

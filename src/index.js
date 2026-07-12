@@ -35,4 +35,9 @@ process.on('unhandledRejection', (err) => {
   logger.error('Unhandled rejection:', err);
 });
 
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception:', err);
+  process.exit(1);
+});
+
 client.login(token);

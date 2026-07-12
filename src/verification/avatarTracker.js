@@ -1,4 +1,12 @@
-const avatarsByGuild = new Map();
+const { hammingDistance } = require('./avatarHash');
+const {
+  insertEvent,
+  countExactValueInWindow,
+  getValuesInWindow,
+} = require('../database/raidSignalEvents');
+
+const EXACT_KIND = 'avatar_exact';
+const PERCEPTUAL_KIND = 'avatar_perceptual';
 
 /**
  * Records a member's avatar hash for the guild and returns how many times
@@ -12,13 +20,30 @@ function recordAvatar(guildId, avatarHash, windowSeconds) {
   const now = Date.now();
   const cutoff = now - windowSeconds * 1000;
 
-  const guildMap = avatarsByGuild.get(guildId) || new Map();
-  const timestamps = (guildMap.get(avatarHash) || []).filter((t) => t > cutoff);
-  timestamps.push(now);
-  guildMap.set(avatarHash, timestamps);
-  avatarsByGuild.set(guildId, guildMap);
-
-  return timestamps.length;
+  insertEvent(guildId, EXACT_KIND, avatarHash, now);
+  return countExactValueInWindow(guildId, EXACT_KIND, avatarHash, cutoff);
 }
 
-module.exports = { recordAvatar };
+/**
+ * Records a member's perceptual (dHash) avatar hash for the guild and
+ * returns how many recent avatars — including this one — are near-duplicates
+ * (Hamming distance <= hammingThreshold). Unlike recordAvatar, this catches
+ * resized/recompressed/lightly-edited copies of the same image, not just
+ * byte-identical files.
+ */
+function recordPerceptualHash(guildId, perceptualHash, windowSeconds, hammingThreshold) {
+  if (!perceptualHash) return 0;
+
+  const now = Date.now();
+  const cutoff = now - windowSeconds * 1000;
+
+  const priorRows = getValuesInWindow(guildId, PERCEPTUAL_KIND, cutoff);
+  const nearDuplicateCount = priorRows.filter(
+    (row) => hammingDistance(row.value, perceptualHash) <= hammingThreshold,
+  ).length;
+
+  insertEvent(guildId, PERCEPTUAL_KIND, perceptualHash, now);
+  return nearDuplicateCount + 1;
+}
+
+module.exports = { recordAvatar, recordPerceptualHash };

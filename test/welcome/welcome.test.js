@@ -21,7 +21,9 @@ function makeClient(fetchImpl) {
 function makeChannel({ isTextBased = true, sendResolves = true } = {}) {
   return {
     isTextBased: () => isTextBased,
-    send: sendResolves ? vi.fn().mockResolvedValue(undefined) : vi.fn().mockRejectedValue(new Error('send failed')),
+    send: sendResolves
+      ? vi.fn().mockResolvedValue(undefined)
+      : vi.fn().mockRejectedValue(new Error('send failed')),
   };
 }
 
@@ -54,7 +56,26 @@ describe('welcome.send', () => {
     await welcome.send(client, { welcome_channel_id: 'chan-1' }, { id: 'user-1' });
 
     expect(client.channels.fetch).toHaveBeenCalledWith('chan-1');
-    expect(channel.send).toHaveBeenCalledWith({ content: 'Welcome <@user-1>! 🎉' });
+    expect(channel.send).toHaveBeenCalledWith({
+      content: 'Welcome <@user-1>! 🎉',
+      allowedMentions: { parse: ['users'] },
+    });
+  });
+
+  it('restricts allowed mentions to users, preventing an admin-set template from pinging @everyone/roles', async () => {
+    const channel = makeChannel();
+    const client = makeClient(() => Promise.resolve(channel));
+
+    await welcome.send(
+      client,
+      { welcome_channel_id: 'chan-1', welcome_message: '@everyone welcome {user}!' },
+      { id: 'user-1' },
+    );
+
+    expect(channel.send).toHaveBeenCalledWith({
+      content: '@everyone welcome <@user-1>!',
+      allowedMentions: { parse: ['users'] },
+    });
   });
 
   it('uses a configured custom message template', async () => {
@@ -67,7 +88,10 @@ describe('welcome.send', () => {
       { id: 'user-1' },
     );
 
-    expect(channel.send).toHaveBeenCalledWith({ content: 'hey <@user-1>!' });
+    expect(channel.send).toHaveBeenCalledWith({
+      content: 'hey <@user-1>!',
+      allowedMentions: { parse: ['users'] },
+    });
   });
 
   it('does not send when the channel is not text-based', async () => {
@@ -81,13 +105,17 @@ describe('welcome.send', () => {
 
   it('does not throw when the channel fetch resolves to null/undefined', async () => {
     const client = makeClient(() => Promise.resolve(null));
-    await expect(welcome.send(client, { welcome_channel_id: 'chan-1' }, { id: 'user-1' })).resolves.toBeUndefined();
+    await expect(
+      welcome.send(client, { welcome_channel_id: 'chan-1' }, { id: 'user-1' }),
+    ).resolves.toBeUndefined();
   });
 
   it('swallows a rejected channel fetch and logs a warning', async () => {
     const client = makeClient(() => Promise.reject(new Error('no access')));
 
-    await expect(welcome.send(client, { welcome_channel_id: 'chan-1' }, { id: 'user-1' })).resolves.toBeUndefined();
+    await expect(
+      welcome.send(client, { welcome_channel_id: 'chan-1' }, { id: 'user-1' }),
+    ).resolves.toBeUndefined();
     expect(logger.warn).toHaveBeenCalledWith('Failed to send welcome message:', 'no access');
   });
 
@@ -95,7 +123,9 @@ describe('welcome.send', () => {
     const channel = makeChannel({ sendResolves: false });
     const client = makeClient(() => Promise.resolve(channel));
 
-    await expect(welcome.send(client, { welcome_channel_id: 'chan-1' }, { id: 'user-1' })).resolves.toBeUndefined();
+    await expect(
+      welcome.send(client, { welcome_channel_id: 'chan-1' }, { id: 'user-1' }),
+    ).resolves.toBeUndefined();
     expect(logger.warn).toHaveBeenCalledWith('Failed to send welcome message:', 'send failed');
   });
 });

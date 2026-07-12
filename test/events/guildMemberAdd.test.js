@@ -11,7 +11,11 @@ let guildMemberAdd;
 beforeEach(() => {
   bustSrcRequireCache(require);
   flow = injectFakeModule(require, '../../src/verification/flow.js', { handleMemberJoin: vi.fn() });
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
   guildMemberAdd = require('../../src/events/guildMemberAdd.js');
 });
 
@@ -32,6 +36,9 @@ describe('guildMemberAdd.execute', () => {
     const member = makeMember();
 
     await expect(guildMemberAdd.execute(member)).resolves.toBeUndefined();
-    expect(logger.error).toHaveBeenCalledWith('Failed to handle join for user-1 in guild guild-1:', 'boom');
+    expect(logger.error).toHaveBeenCalledWith(
+      'Failed to handle join for user-1 in guild guild-1:',
+      'boom',
+    );
   });
 });

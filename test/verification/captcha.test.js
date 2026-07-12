@@ -1,7 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import captcha from '../../src/verification/captcha.js';
 
-const { generateImageCaptcha, pickDifficulty, normalizeAnswer } = captcha;
+const {
+  generateImageCaptcha,
+  generateChallenge,
+  pickCaptchaType,
+  pickDifficulty,
+  normalizeAnswer,
+} = captcha;
 
 const CHARSET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -61,5 +67,55 @@ describe('generateImageCaptcha', () => {
     for (const char of answer) {
       expect(CHARSET).toContain(char);
     }
+  });
+});
+
+describe('pickCaptchaType', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('always returns "image" at hard difficulty, regardless of mode', () => {
+    expect(pickCaptchaType('image', 'hard')).toBe('image');
+    expect(pickCaptchaType('math', 'hard')).toBe('image');
+    expect(pickCaptchaType('random', 'hard')).toBe('image');
+  });
+
+  it('returns "image" for image mode at normal difficulty', () => {
+    expect(pickCaptchaType('image', 'normal')).toBe('image');
+  });
+
+  it('returns "math" for math mode at normal difficulty', () => {
+    expect(pickCaptchaType('math', 'normal')).toBe('math');
+  });
+
+  it('defaults to "image" for an unrecognized mode', () => {
+    expect(pickCaptchaType(undefined, 'normal')).toBe('image');
+  });
+
+  it('branches between image and math for random mode based on Math.random', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.9);
+    expect(pickCaptchaType('random', 'normal')).toBe('math');
+
+    vi.spyOn(Math, 'random').mockReturnValue(0.1);
+    expect(pickCaptchaType('random', 'normal')).toBe('image');
+  });
+});
+
+describe('generateChallenge', () => {
+  it('dispatches to the image captcha and normalizes the shape', () => {
+    const challenge = generateChallenge('image', 'normal');
+    expect(challenge.type).toBe('image');
+    expect(challenge.answer).toHaveLength(6);
+    expect(Buffer.isBuffer(challenge.buffer)).toBe(true);
+    expect(challenge.prompt).toBeNull();
+  });
+
+  it('dispatches to the math captcha and normalizes the shape', () => {
+    const challenge = generateChallenge('math', 'normal');
+    expect(challenge.type).toBe('math');
+    expect(challenge.buffer).toBeNull();
+    expect(typeof challenge.prompt).toBe('string');
+    expect(challenge.answer).toMatch(/^-?\d+$/);
   });
 });

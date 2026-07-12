@@ -8,8 +8,9 @@ module.exports = {
     if (message.author.bot || !message.guildId || !message.member) return;
 
     const guildConfig = getGuildConfig(message.guildId);
-    if (!guildConfig.honeypot_channel_id || message.channelId !== guildConfig.honeypot_channel_id) return;
-    if (message.member.permissions.has(STAFF_EXEMPT_PERMISSIONS, true)) return;
+    if (!guildConfig.honeypot_channel_id || message.channelId !== guildConfig.honeypot_channel_id)
+      return;
+    if (STAFF_EXEMPT_PERMISSIONS.some((p) => message.member.permissions.has(p))) return;
 
     await triggerHoneypot(message.member, guildConfig, message.client, {
       channelId: message.channelId,

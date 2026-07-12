@@ -37,7 +37,9 @@ async function syncChannelPermissions(guild, guildConfig) {
         SendMessages: false,
       });
     } catch (err) {
-      failures.push(`verification channel (<#${guildConfig.verification_channel_id}>): ${err.message}`);
+      failures.push(
+        `verification channel (<#${guildConfig.verification_channel_id}>): ${err.message}`,
+      );
     }
   }
 
@@ -110,7 +112,10 @@ function buildGateMessagePayload(guildConfig) {
     .setDescription(description.join('\n\n'));
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('verify:start').setLabel('Verify').setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('verify:start')
+      .setLabel('Verify')
+      .setStyle(ButtonStyle.Success),
   );
 
   return { embeds: [embed], components: [row] };
@@ -120,7 +125,9 @@ function buildHoneypotBaitPayload() {
   const embed = new EmbedBuilder()
     .setColor(0xed4245)
     .setTitle('🎉 Exclusive giveaway — react to enter!')
-    .setDescription(`React with ${HONEYPOT_BAIT_EMOJI} below for a chance at a special role and prizes.`);
+    .setDescription(
+      `React with ${HONEYPOT_BAIT_EMOJI} below for a chance at a special role and prizes.`,
+    );
 
   return { embeds: [embed] };
 }

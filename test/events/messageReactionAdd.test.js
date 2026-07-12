@@ -11,12 +11,18 @@ let messageReactionAdd;
 
 beforeEach(() => {
   bustSrcRequireCache(require);
-  guildConfig = injectFakeModule(require, '../../src/database/guildConfig.js', { getGuildConfig: vi.fn() });
+  guildConfig = injectFakeModule(require, '../../src/database/guildConfig.js', {
+    getGuildConfig: vi.fn(),
+  });
   honeypot = injectFakeModule(require, '../../src/verification/honeypot.js', {
-    STAFF_EXEMPT_PERMISSIONS: ['exempt-flags'],
+    STAFF_EXEMPT_PERMISSIONS: ['flag-a', 'flag-b'],
     triggerHoneypot: vi.fn(),
   });
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
   messageReactionAdd = require('../../src/events/messageReactionAdd.js');
 });
 
@@ -26,7 +32,11 @@ function makeMessage(overrides = {}) {
     guildId: 'guild-1',
     channelId: 'chan-1',
     client: {},
-    guild: { members: { fetch: vi.fn().mockResolvedValue({ permissions: { has: vi.fn().mockReturnValue(false) } }) } },
+    guild: {
+      members: {
+        fetch: vi.fn().mockResolvedValue({ permissions: { has: vi.fn().mockReturnValue(false) } }),
+      },
+    },
     ...overrides,
   };
 }
@@ -70,7 +80,10 @@ describe('messageReactionAdd.execute', () => {
 
   it('aborts and logs a warning when the partial reaction fetch fails', async () => {
     const message = makeMessage();
-    const reaction = makeReaction(message, { partial: true, fetch: vi.fn().mockRejectedValue(new Error('gone')) });
+    const reaction = makeReaction(message, {
+      partial: true,
+      fetch: vi.fn().mockRejectedValue(new Error('gone')),
+    });
 
     await expect(messageReactionAdd.execute(reaction, makeUser())).resolves.toBeUndefined();
 
@@ -79,7 +92,10 @@ describe('messageReactionAdd.execute', () => {
   });
 
   it('aborts and logs a warning when the partial message fetch fails', async () => {
-    const message = makeMessage({ partial: true, fetch: vi.fn().mockRejectedValue(new Error('gone')) });
+    const message = makeMessage({
+      partial: true,
+      fetch: vi.fn().mockRejectedValue(new Error('gone')),
+    });
     const reaction = makeReaction(message);
 
     await expect(messageReactionAdd.execute(reaction, makeUser())).resolves.toBeUndefined();
@@ -122,7 +138,22 @@ describe('messageReactionAdd.execute', () => {
 
   it('exempts staff-permission members', async () => {
     const message = makeMessage();
-    message.guild.members.fetch = vi.fn().mockResolvedValue({ permissions: { has: vi.fn().mockReturnValue(true) } });
+    message.guild.members.fetch = vi
+      .fn()
+      .mockResolvedValue({ permissions: { has: vi.fn().mockReturnValue(true) } });
+    const reaction = makeReaction(message);
+    guildConfig.getGuildConfig.mockReturnValue({ honeypot_channel_id: 'chan-1' });
+
+    await messageReactionAdd.execute(reaction, makeUser());
+
+    expect(honeypot.triggerHoneypot).not.toHaveBeenCalled();
+  });
+
+  it('exempts a member who has only one of the exempt permissions', async () => {
+    const message = makeMessage();
+    message.guild.members.fetch = vi.fn().mockResolvedValue({
+      permissions: { has: vi.fn().mockImplementation((flag) => flag === 'flag-b') },
+    });
     const reaction = makeReaction(message);
     guildConfig.getGuildConfig.mockReturnValue({ honeypot_channel_id: 'chan-1' });
 
@@ -143,9 +174,14 @@ describe('messageReactionAdd.execute', () => {
     await messageReactionAdd.execute(reaction, user);
 
     expect(message.guild.members.fetch).toHaveBeenCalledWith(user.id);
-    expect(honeypot.triggerHoneypot).toHaveBeenCalledWith(member, guildConfigValue, message.client, {
-      channelId: 'chan-1',
-      trigger: 'reaction',
-    });
+    expect(honeypot.triggerHoneypot).toHaveBeenCalledWith(
+      member,
+      guildConfigValue,
+      message.client,
+      {
+        channelId: 'chan-1',
+        trigger: 'reaction',
+      },
+    );
   });
 });

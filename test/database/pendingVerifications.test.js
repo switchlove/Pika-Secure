@@ -112,6 +112,13 @@ describe('state transition helpers', () => {
     const record = pendingVerifications.getPendingVerification('g1', 'u1');
     expect(record.state).toBe('captcha');
     expect(record.captcha_answer).toBe('XYZ789');
+    expect(record.captcha_type).toBeNull();
+  });
+
+  it('escalateToCaptcha persists the given captcha type', () => {
+    pendingVerifications.escalateToCaptcha('g1', 'u1', '7', 'math');
+    const record = pendingVerifications.getPendingVerification('g1', 'u1');
+    expect(record.captcha_type).toBe('math');
   });
 
   it('recordCaptchaFailure increments attempts and keeps state=captcha when not flagged', () => {
@@ -127,6 +134,13 @@ describe('state transition helpers', () => {
     expect(record.captcha_attempts).toBe(2);
   });
 
+  it('recordCaptchaFailure persists the next captcha type', () => {
+    pendingVerifications.escalateToCaptcha('g1', 'u1', 'AAA111', 'image');
+    pendingVerifications.recordCaptchaFailure('g1', 'u1', '3', false, 'math');
+    const record = pendingVerifications.getPendingVerification('g1', 'u1');
+    expect(record.captcha_type).toBe('math');
+  });
+
   it('recordCaptchaFailure sets state=flagged and allows a null answer when flagged', () => {
     pendingVerifications.escalateToCaptcha('g1', 'u1', 'AAA111');
     pendingVerifications.recordCaptchaFailure('g1', 'u1', null, true);
@@ -140,6 +154,34 @@ describe('state transition helpers', () => {
     const record = pendingVerifications.getPendingVerification('g1', 'u1');
     pendingVerifications.markKicked(record.id);
     expect(pendingVerifications.getPendingVerification('g1', 'u1').state).toBe('kicked');
+  });
+
+  it('bumpRiskScore adds to the score and appends reasons', () => {
+    pendingVerifications.bumpRiskScore('g1', 'u1', 20, ['fast solve']);
+    const record = pendingVerifications.getPendingVerification('g1', 'u1');
+    expect(record.risk_score).toBe(70);
+    expect(JSON.parse(record.risk_reasons)).toEqual(['fast solve']);
+  });
+
+  it('bumpRiskScore clamps the score to 100', () => {
+    pendingVerifications.bumpRiskScore('g1', 'u1', 1000, ['huge bump']);
+    const record = pendingVerifications.getPendingVerification('g1', 'u1');
+    expect(record.risk_score).toBe(100);
+  });
+
+  it('bumpRiskScore clamps the score to 0 for a negative adjustment', () => {
+    pendingVerifications.bumpRiskScore('g1', 'u1', -1000, ['discount']);
+    const record = pendingVerifications.getPendingVerification('g1', 'u1');
+    expect(record.risk_score).toBe(0);
+  });
+
+  it('bumpRiskScore is a no-op for a non-existent record', () => {
+    expect(() => pendingVerifications.bumpRiskScore('nope', 'nope', 20, ['x'])).not.toThrow();
+  });
+
+  it('flagPendingVerification sets state to flagged', () => {
+    pendingVerifications.flagPendingVerification('g1', 'u1');
+    expect(pendingVerifications.getPendingVerification('g1', 'u1').state).toBe('flagged');
   });
 });
 
@@ -196,5 +238,48 @@ describe('findExpired', () => {
   it('defaults now to Date.now() when not provided', () => {
     seed('u-now', 'pending', Date.now() - 1000);
     expect(pendingVerifications.findExpired().map((r) => r.user_id)).toContain('u-now');
+  });
+});
+
+describe('findFlagged', () => {
+  function seedState(guildId, userId, state) {
+    pendingVerifications.createPendingVerification({
+      guildId,
+      userId,
+      riskScore: 90,
+      riskReasons: [],
+      deadlineAt: 1000,
+      joinedAt: 0,
+    });
+    if (state === 'flagged') {
+      pendingVerifications.escalateToCaptcha(guildId, userId, 'X');
+      pendingVerifications.recordCaptchaFailure(guildId, userId, null, true);
+    }
+    if (state === 'verified') pendingVerifications.markVerified(guildId, userId);
+  }
+
+  it('only returns flagged records', () => {
+    seedState('g1', 'u-flagged', 'flagged');
+    seedState('g1', 'u-pending', 'pending');
+    seedState('g1', 'u-verified', 'verified');
+
+    const results = pendingVerifications.findFlagged('g1');
+    expect(results.map((r) => r.user_id)).toEqual(['u-flagged']);
+  });
+
+  it('is scoped to the given guild', () => {
+    seedState('g1', 'u1', 'flagged');
+    seedState('g2', 'u2', 'flagged');
+    expect(pendingVerifications.findFlagged('g1').map((r) => r.user_id)).toEqual(['u1']);
+  });
+
+  it('respects the limit and caps it at 50', () => {
+    for (let i = 0; i < 5; i++) seedState('g1', `u${i}`, 'flagged');
+    expect(pendingVerifications.findFlagged('g1', 2)).toHaveLength(2);
+    expect(pendingVerifications.findFlagged('g1', 1000)).toHaveLength(5);
+  });
+
+  it('returns an empty array when there are no flagged records', () => {
+    expect(pendingVerifications.findFlagged('g-empty')).toEqual([]);
   });
 });

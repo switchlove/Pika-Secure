@@ -9,7 +9,11 @@ let guildCreate;
 
 beforeEach(() => {
   bustSrcRequireCache(require);
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
   guildCreate = require('../../src/events/guildCreate.js');
 });
 
@@ -54,6 +58,9 @@ describe('guildCreate.execute', () => {
     const guild = makeGuild({ me });
 
     await expect(guildCreate.execute(guild)).resolves.toBeUndefined();
-    expect(logger.error).toHaveBeenCalledWith('Failed to set bot role color in guild guild-1:', 'missing perms');
+    expect(logger.error).toHaveBeenCalledWith(
+      'Failed to set bot role color in guild guild-1:',
+      'missing perms',
+    );
   });
 });

@@ -5,11 +5,11 @@ import { bustSrcRequireCache, injectFakeModule } from '../helpers/moduleCache.js
 const require = createRequire(import.meta.url);
 
 let pendingVerifications;
-let guildConfigMod;
 let auditLog;
 let modlog;
 let embeds;
 let logger;
+let raidSignalEvents;
 let sweeper;
 
 const AUTO_KICKED_EMBED = { sentinel: 'auto-kicked' };
@@ -22,19 +22,31 @@ beforeEach(() => {
     markKicked: vi.fn(),
   });
 
-  guildConfigMod = injectFakeModule(require, '../../src/database/guildConfig.js', {
+  raidSignalEvents = injectFakeModule(require, '../../src/database/raidSignalEvents.js', {
+    pruneExpired: vi.fn(),
+  });
+
+  injectFakeModule(require, '../../src/database/guildConfig.js', {
     getGuildConfig: vi.fn().mockReturnValue({ mod_log_channel_id: 'chan-1' }),
   });
 
-  auditLog = injectFakeModule(require, '../../src/database/auditLog.js', { insertAuditLog: vi.fn() });
+  auditLog = injectFakeModule(require, '../../src/database/auditLog.js', {
+    insertAuditLog: vi.fn(),
+  });
 
-  modlog = injectFakeModule(require, '../../src/modlog/modlog.js', { send: vi.fn().mockResolvedValue(undefined) });
+  modlog = injectFakeModule(require, '../../src/modlog/modlog.js', {
+    send: vi.fn().mockResolvedValue(undefined),
+  });
 
   embeds = injectFakeModule(require, '../../src/modlog/embeds.js', {
     autoKickedEmbed: vi.fn().mockReturnValue(AUTO_KICKED_EMBED),
   });
 
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
 
   sweeper = require('../../src/scheduler/sweeper.js');
 
@@ -67,6 +79,28 @@ describe('sweeper.start', () => {
     expect(pendingVerifications.markKicked).not.toHaveBeenCalled();
   });
 
+  it('prunes expired tracker rows on each sweep', async () => {
+    const client = makeClient();
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(raidSignalEvents.pruneExpired).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(raidSignalEvents.pruneExpired).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs and continues when pruning throws', async () => {
+    raidSignalEvents.pruneExpired.mockImplementation(() => {
+      throw new Error('prune exploded');
+    });
+    const client = makeClient();
+
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(logger.error).toHaveBeenCalledWith('Tracker prune failed:', 'prune exploded');
+  });
+
   it('kicks the member, marks kicked, audit-logs, and notifies modlog for an expired record', async () => {
     const record = { id: 42, guild_id: 'guild-1', user_id: 'user-1' };
     pendingVerifications.findExpired.mockReturnValue([record]);
@@ -81,7 +115,11 @@ describe('sweeper.start', () => {
     expect(pendingVerifications.markKicked).toHaveBeenCalledWith(42);
     expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'user-1', 'auto_kicked');
     expect(embeds.autoKickedEmbed).toHaveBeenCalledWith('guild-1', 'user-1');
-    expect(modlog.send).toHaveBeenCalledWith(client, { mod_log_channel_id: 'chan-1' }, AUTO_KICKED_EMBED);
+    expect(modlog.send).toHaveBeenCalledWith(
+      client,
+      { mod_log_channel_id: 'chan-1' },
+      AUTO_KICKED_EMBED,
+    );
   });
 
   it('still marks kicked when the member cannot be resolved', async () => {
@@ -95,6 +133,21 @@ describe('sweeper.start', () => {
 
     expect(pendingVerifications.markKicked).toHaveBeenCalledWith(42);
     expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'user-1', 'auto_kicked');
+  });
+
+  it('dead-letters a record when the guild is unknown (bot no longer in guild)', async () => {
+    const record = { id: 42, guild_id: 'guild-gone', user_id: 'user-1' };
+    pendingVerifications.findExpired.mockReturnValue([record]);
+    const unknownGuildError = Object.assign(new Error('Unknown Guild'), { code: 10004 });
+    const client = makeClient(() => Promise.reject(unknownGuildError));
+
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pendingVerifications.markKicked).toHaveBeenCalledWith(42);
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-gone', 'user-1', 'auto_kicked');
+    expect(modlog.send).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('does not stop the sweep when one record throws — a later record still completes', async () => {

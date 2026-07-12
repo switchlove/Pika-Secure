@@ -49,7 +49,12 @@ describe('HONEYPOT_BAIT_EMOJI', () => {
 });
 
 function makeMember() {
-  return { roles: { add: vi.fn().mockResolvedValue(undefined), remove: vi.fn().mockResolvedValue(undefined) } };
+  return {
+    roles: {
+      add: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn().mockResolvedValue(undefined),
+    },
+  };
 }
 
 describe('assignUnverifiedRole', () => {
@@ -98,13 +103,17 @@ describe('applyVerifiedRoles', () => {
   it('swallows a rejected roles.remove', async () => {
     const member = makeMember();
     member.roles.remove.mockRejectedValue(new Error('no perms'));
-    await expect(applyVerifiedRoles(member, { unverified_role_id: 'role-u' })).resolves.toBeUndefined();
+    await expect(
+      applyVerifiedRoles(member, { unverified_role_id: 'role-u' }),
+    ).resolves.toBeUndefined();
   });
 
   it('swallows a rejected roles.add', async () => {
     const member = makeMember();
     member.roles.add.mockRejectedValue(new Error('no perms'));
-    await expect(applyVerifiedRoles(member, { verified_role_id: 'role-v' })).resolves.toBeUndefined();
+    await expect(
+      applyVerifiedRoles(member, { verified_role_id: 'role-v' }),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -147,8 +156,14 @@ describe('syncChannelPermissions', () => {
       verification_channel_id: 'v-1',
     });
     expect(failures).toEqual([]);
-    expect(verifChannel.permissionOverwrites.edit).toHaveBeenCalledWith('bot-1', expect.any(Object));
-    expect(verifChannel.permissionOverwrites.edit).toHaveBeenCalledWith('role-u', expect.any(Object));
+    expect(verifChannel.permissionOverwrites.edit).toHaveBeenCalledWith(
+      'bot-1',
+      expect.any(Object),
+    );
+    expect(verifChannel.permissionOverwrites.edit).toHaveBeenCalledWith(
+      'role-u',
+      expect.any(Object),
+    );
   });
 
   it('records a failure when the verification channel fetch rejects', async () => {
@@ -168,7 +183,9 @@ describe('syncChannelPermissions', () => {
       mod_log_channel_id: 'm-1',
     });
     expect(failures).toEqual([]);
-    expect(modChannel.permissionOverwrites.edit).toHaveBeenCalledWith('role-u', { ViewChannel: false });
+    expect(modChannel.permissionOverwrites.edit).toHaveBeenCalledWith('role-u', {
+      ViewChannel: false,
+    });
   });
 
   it('records a failure when the mod-log channel fetch rejects', async () => {
@@ -205,7 +222,9 @@ describe('syncHoneypotPermissions', () => {
     const failures = await syncHoneypotPermissions(guild, { honeypot_channel_id: 'h-1' });
     expect(failures).toEqual([]);
     expect(channel.permissionOverwrites.edit).toHaveBeenCalledWith('bot-1', expect.any(Object));
-    expect(channel.permissionOverwrites.edit).toHaveBeenCalledWith('everyone-role', { ViewChannel: false });
+    expect(channel.permissionOverwrites.edit).toHaveBeenCalledWith('everyone-role', {
+      ViewChannel: false,
+    });
     expect(channel.permissionOverwrites.edit).toHaveBeenCalledTimes(2);
   });
 
@@ -219,7 +238,9 @@ describe('syncHoneypotPermissions', () => {
     });
     expect(failures).toEqual([]);
     expect(channel.permissionOverwrites.edit).toHaveBeenCalledWith('role-u', expect.any(Object));
-    expect(channel.permissionOverwrites.edit).toHaveBeenCalledWith('role-v', { ViewChannel: false });
+    expect(channel.permissionOverwrites.edit).toHaveBeenCalledWith('role-v', {
+      ViewChannel: false,
+    });
     expect(channel.permissionOverwrites.edit).toHaveBeenCalledTimes(4);
   });
 

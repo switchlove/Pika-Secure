@@ -11,7 +11,11 @@ let ready;
 beforeEach(() => {
   bustSrcRequireCache(require);
   sweeper = injectFakeModule(require, '../../src/scheduler/sweeper.js', { start: vi.fn() });
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
   ready = require('../../src/events/ready.js');
 });
 

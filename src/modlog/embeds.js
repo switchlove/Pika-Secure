@@ -47,17 +47,66 @@ function captchaFailedEmbed(member, attempts, maxAttempts, flagged) {
     .addFields({ name: 'Attempts', value: `${attempts}/${maxAttempts}` });
 }
 
+function fastSolveFlaggedEmbed(member, latencyMs, repeatCount) {
+  return baseEmbed(0xed4245)
+    .setTitle('Captcha solved correctly — flagged for review')
+    .setDescription(userField(member))
+    .addFields(
+      { name: 'Solve time', value: `${latencyMs}ms` },
+      { name: 'Fast solves in window', value: `${repeatCount}` },
+    );
+}
+
 function autoKickedEmbed(guildId, userId) {
   return baseEmbed(0xed4245)
     .setTitle('Auto-kick performed')
-    .setDescription(`<@${userId}> (\`${userId}\`) did not verify before the deadline and was kicked.`);
+    .setDescription(
+      `<@${userId}> (\`${userId}\`) did not verify before the deadline and was kicked.`,
+    );
 }
 
 function honeypotTriggeredEmbed(member, trigger = 'message') {
-  const action = trigger === 'reaction' ? 'reacted to the bait message in the honeypot channel' : 'posted in the honeypot channel';
+  const action =
+    trigger === 'reaction'
+      ? 'reacted to the bait message in the honeypot channel'
+      : 'posted in the honeypot channel';
   return baseEmbed(0xed4245)
     .setTitle('Honeypot triggered — banned')
     .setDescription(`${userField(member)} ${action} and was banned.`);
+}
+
+function flaggedListEmbed(records) {
+  const embed = baseEmbed(0xed4245).setTitle('Flagged for review');
+  if (records.length === 0) {
+    embed.setDescription('No members currently flagged.');
+    return embed;
+  }
+
+  embed.addFields(
+    records.slice(0, 20).map((r) => ({
+      name: `<@${r.user_id}> (${r.user_id})`,
+      value: `Score: ${r.risk_score}/100 · Attempts: ${r.captcha_attempts}\n${(
+        JSON.parse(r.risk_reasons || '[]').join(', ') || 'No reasons recorded'
+      ).slice(0, 200)}`,
+    })),
+  );
+  return embed;
+}
+
+function auditLogListEmbed(entries) {
+  const embed = baseEmbed(0x5865f2).setTitle('Recent audit log');
+  if (entries.length === 0) {
+    embed.setDescription('No matching audit log entries.');
+    return embed;
+  }
+
+  embed.addFields(
+    entries.slice(0, 20).map((e) => ({
+      name: `${e.event_type} — <t:${Math.floor(e.created_at / 1000)}:R>`,
+      value: `${e.user_id ? `<@${e.user_id}>` : 'N/A'}\n${(e.detail || '(no detail)').slice(0, 200)}`,
+    })),
+  );
+  return embed;
 }
 
 function unconfiguredEmbed(member) {
@@ -73,6 +122,9 @@ module.exports = {
   verifiedEmbed,
   captchaEscalatedEmbed,
   captchaFailedEmbed,
+  fastSolveFlaggedEmbed,
+  flaggedListEmbed,
+  auditLogListEmbed,
   autoKickedEmbed,
   honeypotTriggeredEmbed,
   unconfiguredEmbed,

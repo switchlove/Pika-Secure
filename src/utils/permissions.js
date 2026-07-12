@@ -7,7 +7,9 @@ function isTrueAdmin(member) {
 function canManageBot(member, guildConfig) {
   if (isTrueAdmin(member)) return true;
   const adminRoleIds = guildConfig?.admin_role_ids ?? [];
-  return adminRoleIds.length > 0 && member.roles.cache.some((role) => adminRoleIds.includes(role.id));
+  return (
+    adminRoleIds.length > 0 && member.roles.cache.some((role) => adminRoleIds.includes(role.id))
+  );
 }
 
 module.exports = { isTrueAdmin, canManageBot };

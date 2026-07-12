@@ -20,11 +20,12 @@ module.exports = {
     if (!message.guildId) return;
 
     const guildConfig = getGuildConfig(message.guildId);
-    if (!guildConfig.honeypot_channel_id || message.channelId !== guildConfig.honeypot_channel_id) return;
+    if (!guildConfig.honeypot_channel_id || message.channelId !== guildConfig.honeypot_channel_id)
+      return;
 
     const member = await message.guild.members.fetch(user.id).catch(() => null);
     if (!member) return;
-    if (member.permissions.has(STAFF_EXEMPT_PERMISSIONS, true)) return;
+    if (STAFF_EXEMPT_PERMISSIONS.some((p) => member.permissions.has(p))) return;
 
     await triggerHoneypot(member, guildConfig, message.client, {
       channelId: message.channelId,

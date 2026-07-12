@@ -1,4 +1,6 @@
-const joinsByGuild = new Map();
+const { insertEvent, countInWindow } = require('../database/raidSignalEvents');
+
+const KIND = 'join';
 
 /**
  * Records a join for the guild and returns how many joins have happened
@@ -6,13 +8,8 @@ const joinsByGuild = new Map();
  */
 function recordJoin(guildId, windowSeconds) {
   const now = Date.now();
-  const cutoff = now - windowSeconds * 1000;
-
-  const timestamps = (joinsByGuild.get(guildId) || []).filter((t) => t > cutoff);
-  timestamps.push(now);
-  joinsByGuild.set(guildId, timestamps);
-
-  return timestamps.length;
+  insertEvent(guildId, KIND, null, now);
+  return countInWindow(guildId, KIND, now - windowSeconds * 1000);
 }
 
 module.exports = { recordJoin };

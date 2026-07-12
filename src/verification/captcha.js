@@ -1,5 +1,6 @@
 const path = require('path');
 const { createCanvas, GlobalFonts } = require('@napi-rs/canvas');
+const { generateMathCaptcha } = require('./mathCaptcha');
 
 // Bundled rather than relying on a system font: generic CSS family names like
 // "sans-serif" don't resolve in @napi-rs/canvas, and minimal/production hosts
@@ -75,7 +76,13 @@ function renderCaptchaImage(code, tier) {
   for (let i = 0; i < tier.noiseDots; i++) {
     ctx.fillStyle = `rgba(255, 255, 255, ${randomInRange(0.1, 0.4)})`;
     ctx.beginPath();
-    ctx.arc(randomInRange(0, width), randomInRange(0, HEIGHT), randomInRange(0.5, 1.5), 0, Math.PI * 2);
+    ctx.arc(
+      randomInRange(0, width),
+      randomInRange(0, HEIGHT),
+      randomInRange(0.5, 1.5),
+      0,
+      Math.PI * 2,
+    );
     ctx.fill();
   }
 
@@ -96,7 +103,34 @@ function pickDifficulty(riskScore, hardThreshold) {
 }
 
 function normalizeAnswer(value) {
-  return String(value || '').trim().toUpperCase();
+  return String(value || '')
+    .trim()
+    .toUpperCase();
 }
 
-module.exports = { generateImageCaptcha, pickDifficulty, normalizeAnswer };
+// A plaintext math question has essentially zero bot-resistance (trivially
+// machine-parseable), so hard-difficulty joins always get the image captcha
+// regardless of the guild's configured mode — math is only ever offered
+// alongside the normal tier, as an accessibility/diversity option.
+function pickCaptchaType(captchaMode, difficulty) {
+  if (difficulty === 'hard') return 'image';
+  if (captchaMode === 'random') return Math.random() < 0.5 ? 'image' : 'math';
+  return captchaMode === 'math' ? 'math' : 'image';
+}
+
+function generateChallenge(type, difficulty) {
+  if (type === 'math') {
+    const { answer, prompt } = generateMathCaptcha(difficulty);
+    return { type: 'math', answer, prompt, buffer: null };
+  }
+  const { answer, buffer } = generateImageCaptcha(difficulty);
+  return { type: 'image', answer, buffer, prompt: null };
+}
+
+module.exports = {
+  generateImageCaptcha,
+  generateChallenge,
+  pickCaptchaType,
+  pickDifficulty,
+  normalizeAnswer,
+};

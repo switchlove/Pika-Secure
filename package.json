@@ -14,19 +14,28 @@
     "deploy-commands:global": "node src/deploy-commands.js --global",
     "test": "vitest run",
     "test:watch": "vitest",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.2",
     "discord.js": "^14.26.4",
-    "dotenv": "^16.4.5"
+    "dotenv": "^17.4.2"
   },
   "optionalDependencies": {
     "@napi-rs/canvas-win32-x64-msvc": "^1.0.2",
     "@rolldown/binding-win32-x64-msvc": "^1.1.4"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
+    "prettier": "^3.9.5",
     "vitest": "^4.1.10"
   }
 }

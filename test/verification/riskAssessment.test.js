@@ -29,6 +29,8 @@ function makeGuildConfig(overrides = {}) {
     join_burst_window_seconds: 60,
     avatar_reuse_count_threshold: 3,
     avatar_reuse_window_seconds: 60,
+    username_similarity_count_threshold: 3,
+    username_similarity_window_seconds: 60,
     ...overrides,
   };
 }
@@ -79,12 +81,22 @@ describe('computeRiskScore', () => {
   });
 
   it('penalizes join bursts above the threshold', () => {
-    const result = computeRiskScore(makeMember(), makeGuildConfig({ join_burst_count_threshold: 5 }), 6, 0);
+    const result = computeRiskScore(
+      makeMember(),
+      makeGuildConfig({ join_burst_count_threshold: 5 }),
+      6,
+      0,
+    );
     expect(result.score).toBe(35);
   });
 
   it('does not penalize join counts at or below the threshold', () => {
-    const result = computeRiskScore(makeMember(), makeGuildConfig({ join_burst_count_threshold: 5 }), 5, 0);
+    const result = computeRiskScore(
+      makeMember(),
+      makeGuildConfig({ join_burst_count_threshold: 5 }),
+      5,
+      0,
+    );
     expect(result.score).toBe(0);
   });
 
@@ -109,6 +121,29 @@ describe('computeRiskScore', () => {
     expect(result.score).toBe(25);
   });
 
+  it('penalizes near-duplicate avatars above the threshold when an avatar is set', () => {
+    const result = computeRiskScore(
+      makeMember({ avatar: 'hash' }),
+      makeGuildConfig({ avatar_reuse_count_threshold: 3 }),
+      1,
+      0,
+      4,
+    );
+    expect(result.score).toBe(20);
+  });
+
+  it('ignores perceptual avatar match count when the member has no avatar', () => {
+    const result = computeRiskScore(
+      makeMember({ avatar: null }),
+      makeGuildConfig({ avatar_reuse_count_threshold: 3 }),
+      1,
+      0,
+      10,
+    );
+    // Only the no-avatar penalty should apply, not the perceptual-match one.
+    expect(result.score).toBe(25);
+  });
+
   it('penalizes usernames matching the bot-generated pattern', () => {
     const result = computeRiskScore(makeMember({ username: 'user48213' }), makeGuildConfig(), 1, 0);
     expect(result.score).toBe(15);
@@ -116,6 +151,30 @@ describe('computeRiskScore', () => {
 
   it('does not penalize usernames that only partially resemble the pattern', () => {
     const result = computeRiskScore(makeMember({ username: 'user482' }), makeGuildConfig(), 1, 0);
+    expect(result.score).toBe(0);
+  });
+
+  it('penalizes username clusters above the similarity threshold', () => {
+    const result = computeRiskScore(
+      makeMember(),
+      makeGuildConfig({ username_similarity_count_threshold: 3 }),
+      1,
+      0,
+      0,
+      4,
+    );
+    expect(result.score).toBe(20);
+  });
+
+  it('does not penalize similar-username counts at or below the threshold', () => {
+    const result = computeRiskScore(
+      makeMember(),
+      makeGuildConfig({ username_similarity_count_threshold: 3 }),
+      1,
+      0,
+      0,
+      3,
+    );
     expect(result.score).toBe(0);
   });
 

@@ -6,6 +6,9 @@ const {
   verifiedEmbed,
   captchaEscalatedEmbed,
   captchaFailedEmbed,
+  fastSolveFlaggedEmbed,
+  flaggedListEmbed,
+  auditLogListEmbed,
   autoKickedEmbed,
   honeypotTriggeredEmbed,
   unconfiguredEmbed,
@@ -79,6 +82,76 @@ describe('captchaFailedEmbed', () => {
     const data = captchaFailedEmbed(makeMember(), 3, 3, true).data;
     expect(data.color).toBe(0xed4245);
     expect(data.title).toBe('Captcha failed — flagged for review');
+  });
+});
+
+describe('fastSolveFlaggedEmbed', () => {
+  it('reports the solve time and repeat count', () => {
+    const data = fastSolveFlaggedEmbed(makeMember(), 900, 4).data;
+    expect(data.color).toBe(0xed4245);
+    expect(data.title).toBe('Captcha solved correctly — flagged for review');
+    expect(data.fields).toEqual([
+      { name: 'Solve time', value: '900ms' },
+      { name: 'Fast solves in window', value: '4' },
+    ]);
+  });
+});
+
+describe('flaggedListEmbed', () => {
+  it('shows an empty-state message when there are no records', () => {
+    const data = flaggedListEmbed([]).data;
+    expect(data.description).toBe('No members currently flagged.');
+    expect(data.fields).toBeUndefined();
+  });
+
+  it('renders a field per flagged record', () => {
+    const records = [
+      {
+        user_id: 'user-1',
+        risk_score: 80,
+        captcha_attempts: 3,
+        risk_reasons: JSON.stringify(['no avatar', 'join burst']),
+      },
+    ];
+    const data = flaggedListEmbed(records).data;
+    expect(data.fields).toHaveLength(1);
+    expect(data.fields[0].name).toContain('user-1');
+    expect(data.fields[0].value).toContain('80/100');
+    expect(data.fields[0].value).toContain('no avatar, join burst');
+  });
+
+  it('falls back to a placeholder when reasons are empty', () => {
+    const records = [
+      { user_id: 'user-1', risk_score: 10, captcha_attempts: 0, risk_reasons: '[]' },
+    ];
+    const data = flaggedListEmbed(records).data;
+    expect(data.fields[0].value).toContain('No reasons recorded');
+  });
+});
+
+describe('auditLogListEmbed', () => {
+  it('shows an empty-state message when there are no entries', () => {
+    const data = auditLogListEmbed([]).data;
+    expect(data.description).toBe('No matching audit log entries.');
+    expect(data.fields).toBeUndefined();
+  });
+
+  it('renders a field per entry, with N/A for a null user', () => {
+    const entries = [
+      { event_type: 'auto_kicked', user_id: null, detail: null, created_at: 1_700_000_000_000 },
+      {
+        event_type: 'verified',
+        user_id: 'user-1',
+        detail: JSON.stringify({ viaCaptcha: true }),
+        created_at: 1_700_000_000_000,
+      },
+    ];
+    const data = auditLogListEmbed(entries).data;
+    expect(data.fields).toHaveLength(2);
+    expect(data.fields[0].name).toContain('auto_kicked');
+    expect(data.fields[0].value).toContain('N/A');
+    expect(data.fields[1].value).toContain('user-1');
+    expect(data.fields[1].value).toContain('viaCaptcha');
   });
 });
 

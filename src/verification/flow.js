@@ -17,13 +17,18 @@ const {
   markVerified,
   escalateToCaptcha,
   recordCaptchaFailure,
+  bumpRiskScore,
+  flagPendingVerification,
 } = require('../database/pendingVerifications');
 const { insertAuditLog } = require('../database/auditLog');
-const { computeRiskScore } = require('./riskAssessment');
+const { computeRiskScore, FAST_SOLVE_RISK_POINTS } = require('./riskAssessment');
 const { recordJoin } = require('./joinBurstTracker');
-const { recordAvatar } = require('./avatarTracker');
+const { recordAvatar, recordPerceptualHash } = require('./avatarTracker');
+const { computeAvatarHash } = require('./avatarHash');
+const { recordUsername } = require('./usernameTracker');
+const { recordFastSolve } = require('./fastSolveTracker');
 const { assignUnverifiedRole, applyVerifiedRoles } = require('./quarantine');
-const { generateImageCaptcha, pickDifficulty, normalizeAnswer } = require('./captcha');
+const { generateChallenge, pickCaptchaType, pickDifficulty, normalizeAnswer } = require('./captcha');
 const modlog = require('../modlog/modlog');
 const embeds = require('../modlog/embeds');
 const welcome = require('../welcome/welcome');
@@ -39,6 +44,31 @@ const MIN_RESUBMIT_MS = 1000;
 // captchas (and spamming the modlog) instead of solving the one already shown.
 const MIN_RECAPTCHA_MS = 5000;
 
+// Best-effort perceptual-hash lookup: never lets a slow/failed CDN fetch
+// block or delay the join-gate — falls back to "no signal" on any error.
+async function getPerceptualAvatarMatchCount(member, guildConfig) {
+  if (!member.user.avatar) return 0;
+
+  try {
+    const avatarURL = member.user.avatarURL({ extension: 'png', size: 64 });
+    if (!avatarURL) return 0;
+
+    const hash = await computeAvatarHash(avatarURL);
+    return recordPerceptualHash(
+      member.guild.id,
+      hash,
+      guildConfig.avatar_reuse_window_seconds,
+      guildConfig.perceptual_avatar_hamming_threshold,
+    );
+  } catch (err) {
+    logger.warn(
+      `Failed to compute perceptual avatar hash for ${member.id} in guild ${member.guild.id}:`,
+      err.message,
+    );
+    return 0;
+  }
+}
+
 async function handleMemberJoin(member) {
   const guildConfig = getGuildConfig(member.guild.id);
 
@@ -49,8 +79,26 @@ async function handleMemberJoin(member) {
   }
 
   const burstCount = recordJoin(member.guild.id, guildConfig.join_burst_window_seconds);
-  const avatarReuseCount = recordAvatar(member.guild.id, member.user.avatar, guildConfig.avatar_reuse_window_seconds);
-  const { score, reasons } = computeRiskScore(member, guildConfig, burstCount, avatarReuseCount);
+  const avatarReuseCount = recordAvatar(
+    member.guild.id,
+    member.user.avatar,
+    guildConfig.avatar_reuse_window_seconds,
+  );
+  const perceptualAvatarMatchCount = await getPerceptualAvatarMatchCount(member, guildConfig);
+  const similarUsernameCount = recordUsername(
+    member.guild.id,
+    member.user.username,
+    guildConfig.username_similarity_window_seconds,
+    guildConfig.username_similarity_distance_threshold,
+  );
+  const { score, reasons } = computeRiskScore(
+    member,
+    guildConfig,
+    burstCount,
+    avatarReuseCount,
+    perceptualAvatarMatchCount,
+    similarUsernameCount,
+  );
   const deadlineAt = Date.now() + guildConfig.verification_timeout_min * 60_000;
 
   createPendingVerification({
@@ -74,37 +122,63 @@ async function handleMemberJoin(member) {
 
 async function verifyMember(member, guildConfig, viaCaptcha, latencyMs = null) {
   const fastSolve = latencyMs !== null && latencyMs < MIN_HUMAN_SOLVE_MS;
+  if (fastSolve) {
+    bumpRiskScore(member.guild.id, member.id, FAST_SOLVE_RISK_POINTS, [
+      `Captcha solved in ${latencyMs}ms (< ${MIN_HUMAN_SOLVE_MS}ms human-solve floor) — +${FAST_SOLVE_RISK_POINTS}`,
+    ]);
+  }
   await applyVerifiedRoles(member, guildConfig);
   markVerified(member.guild.id, member.id);
   insertAuditLog(member.guild.id, member.id, 'verified', { viaCaptcha, latencyMs, fastSolve });
-  await modlog.send(member.client, guildConfig, embeds.verifiedEmbed(member, viaCaptcha, latencyMs, fastSolve));
+  await modlog.send(
+    member.client,
+    guildConfig,
+    embeds.verifiedEmbed(member, viaCaptcha, latencyMs, fastSolve),
+  );
   await welcome.send(member.client, guildConfig, member);
 }
 
-function buildCaptchaPayload(buffer, title, description) {
-  const attachment = new AttachmentBuilder(buffer, { name: 'captcha.png' });
-  const embed = new EmbedBuilder()
-    .setColor(0xe67e22)
-    .setTitle(title)
-    .setDescription(description)
-    .setImage('attachment://captcha.png');
+function buildCaptchaPayload(challenge, title, description) {
+  const embed = new EmbedBuilder().setColor(0xe67e22).setTitle(title);
+  const files = [];
+
+  if (challenge.type === 'math') {
+    embed.setDescription(`${description}\n\n**${challenge.prompt}**`);
+  } else {
+    files.push(new AttachmentBuilder(challenge.buffer, { name: 'captcha.png' }));
+    embed.setDescription(description).setImage('attachment://captcha.png');
+  }
+
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('captcha:openmodal').setLabel('Enter Code').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('captcha:openmodal')
+      .setLabel('Enter Code')
+      .setStyle(ButtonStyle.Primary),
   );
-  return { embeds: [embed], files: [attachment], components: [row], flags: MessageFlags.Ephemeral };
+  return { embeds: [embed], files, components: [row], flags: MessageFlags.Ephemeral };
 }
 
 async function presentCaptcha(interaction, guildConfig, riskScore) {
   const difficulty = pickDifficulty(riskScore, guildConfig.hard_captcha_risk_threshold);
-  const { answer, buffer } = generateImageCaptcha(difficulty);
-  escalateToCaptcha(interaction.guild.id, interaction.user.id, answer);
-  insertAuditLog(interaction.guild.id, interaction.user.id, 'captcha_escalated');
-  await modlog.send(interaction.client, guildConfig, embeds.captchaEscalatedEmbed(interaction.member));
+  const type = pickCaptchaType(guildConfig.captcha_type, difficulty);
+  const challenge = generateChallenge(type, difficulty);
+  escalateToCaptcha(interaction.guild.id, interaction.user.id, challenge.answer, challenge.type);
+  insertAuditLog(interaction.guild.id, interaction.user.id, 'captcha_escalated', {
+    type: challenge.type,
+    difficulty,
+  });
+  await modlog.send(
+    interaction.client,
+    guildConfig,
+    embeds.captchaEscalatedEmbed(interaction.member),
+  );
 
   const payload = buildCaptchaPayload(
-    buffer,
+    challenge,
     'Solve the captcha to continue',
-    'Click **Enter Code** and type the text shown below.',
+    challenge.type === 'math'
+      ? 'Click **Enter Code** and answer the question below.'
+      : 'Click **Enter Code** and type the text shown below.',
   );
   return interaction.reply(payload);
 }
@@ -120,7 +194,10 @@ async function handleVerifyButtonClick(interaction) {
     });
   }
   if (record.state === 'verified') {
-    return interaction.reply({ content: 'You are already verified.', flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: 'You are already verified.',
+      flags: MessageFlags.Ephemeral,
+    });
   }
   if (record.state === 'kicked') {
     return interaction.reply({
@@ -137,12 +214,16 @@ async function handleVerifyButtonClick(interaction) {
 
   if (record.state === 'pending' && record.risk_score < guildConfig.captcha_risk_threshold) {
     await verifyMember(interaction.member, guildConfig, false);
-    return interaction.reply({ content: 'You have been verified. Welcome!', flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: 'You have been verified. Welcome!',
+      flags: MessageFlags.Ephemeral,
+    });
   }
 
   if (record.state === 'captcha' && Date.now() - record.updated_at < MIN_RECAPTCHA_MS) {
     return interaction.reply({
-      content: 'You already have an active captcha — click **Enter Code** above, or wait a moment before requesting a new one.',
+      content:
+        'You already have an active captcha — click **Enter Code** above, or wait a moment before requesting a new one.',
       flags: MessageFlags.Ephemeral,
     });
   }
@@ -159,14 +240,20 @@ async function handleCaptchaModalOpen(interaction) {
     });
   }
 
+  const isMath = record.captcha_type === 'math';
   const modal = new ModalBuilder().setCustomId('captcha:submit').setTitle('Enter the captcha code');
   const input = new TextInputBuilder()
     .setCustomId('captcha:answer')
-    .setLabel('Code shown in the image')
+    .setLabel(isMath ? 'Your answer' : 'Code shown in the image')
     .setStyle(TextInputStyle.Short)
-    .setMinLength(record.captcha_answer.length)
-    .setMaxLength(record.captcha_answer.length)
     .setRequired(true);
+
+  if (isMath) {
+    input.setMinLength(1).setMaxLength(10);
+  } else {
+    input.setMinLength(record.captcha_answer.length).setMaxLength(record.captcha_answer.length);
+  }
+
   modal.addComponents(new ActionRowBuilder().addComponents(input));
 
   return interaction.showModal(modal);
@@ -193,16 +280,49 @@ async function handleCaptchaModalSubmit(interaction) {
 
   const submitted = normalizeAnswer(interaction.fields.getTextInputValue('captcha:answer'));
   if (submitted === record.captcha_answer) {
+    const fastSolve = latencyMs < MIN_HUMAN_SOLVE_MS;
+    const repeatFastSolveCount = fastSolve
+      ? recordFastSolve(interaction.guild.id, guildConfig.fast_solve_window_seconds)
+      : 0;
+
+    if (repeatFastSolveCount > guildConfig.fast_solve_count_threshold) {
+      flagPendingVerification(interaction.guild.id, interaction.user.id);
+      insertAuditLog(interaction.guild.id, interaction.user.id, 'captcha_fast_solve_flagged', {
+        latencyMs,
+        repeatFastSolveCount,
+      });
+      await modlog.send(
+        interaction.client,
+        guildConfig,
+        embeds.fastSolveFlaggedEmbed(interaction.member, latencyMs, repeatFastSolveCount),
+      );
+      return interaction.reply({
+        content:
+          'Correct — but this verification pattern needs manual review. A moderator has been notified.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
     await verifyMember(interaction.member, guildConfig, true, latencyMs);
-    return interaction.reply({ content: 'Correct! You have been verified. Welcome!', flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: 'Correct! You have been verified. Welcome!',
+      flags: MessageFlags.Ephemeral,
+    });
   }
 
   const attempts = record.captcha_attempts + 1;
   const flagged = attempts >= guildConfig.max_captcha_attempts;
   const difficulty = pickDifficulty(record.risk_score, guildConfig.hard_captcha_risk_threshold);
-  const nextAnswer = flagged ? null : generateImageCaptcha(difficulty);
+  const nextType = flagged ? null : pickCaptchaType(guildConfig.captcha_type, difficulty);
+  const nextChallenge = flagged ? null : generateChallenge(nextType, difficulty);
 
-  recordCaptchaFailure(interaction.guild.id, interaction.user.id, nextAnswer ? nextAnswer.answer : null, flagged);
+  recordCaptchaFailure(
+    interaction.guild.id,
+    interaction.user.id,
+    nextChallenge ? nextChallenge.answer : null,
+    flagged,
+    nextChallenge ? nextChallenge.type : null,
+  );
   insertAuditLog(
     interaction.guild.id,
     interaction.user.id,
@@ -212,18 +332,24 @@ async function handleCaptchaModalSubmit(interaction) {
   await modlog.send(
     interaction.client,
     guildConfig,
-    embeds.captchaFailedEmbed(interaction.member, attempts, guildConfig.max_captcha_attempts, flagged),
+    embeds.captchaFailedEmbed(
+      interaction.member,
+      attempts,
+      guildConfig.max_captcha_attempts,
+      flagged,
+    ),
   );
 
   if (flagged) {
     return interaction.reply({
-      content: 'Incorrect — too many failed attempts. A moderator has been notified to review your case.',
+      content:
+        'Incorrect — too many failed attempts. A moderator has been notified to review your case.',
       flags: MessageFlags.Ephemeral,
     });
   }
 
   const payload = buildCaptchaPayload(
-    nextAnswer.buffer,
+    nextChallenge,
     'Incorrect — try again',
     `Attempt ${attempts}/${guildConfig.max_captcha_attempts}. A new code has been generated.`,
   );

@@ -41,6 +41,13 @@ const ALLOWED_FIELDS = new Set([
   'avatar_reuse_count_threshold',
   'avatar_reuse_window_seconds',
   'hard_captcha_risk_threshold',
+  'perceptual_avatar_hamming_threshold',
+  'username_similarity_count_threshold',
+  'username_similarity_window_seconds',
+  'username_similarity_distance_threshold',
+  'fast_solve_count_threshold',
+  'fast_solve_window_seconds',
+  'captcha_type',
   'admin_role_ids',
 ]);
 
@@ -48,7 +55,11 @@ function updateGuildConfig(guildId, fields) {
   ensureGuildConfig(guildId);
   const entries = Object.entries(fields)
     .filter(([key, value]) => ALLOWED_FIELDS.has(key) && value !== undefined)
-    .map(([key, value]) => (key === 'admin_role_ids' && Array.isArray(value) ? [key, JSON.stringify(value)] : [key, value]));
+    .map(([key, value]) =>
+      key === 'admin_role_ids' && Array.isArray(value)
+        ? [key, JSON.stringify(value)]
+        : [key, value],
+    );
   if (entries.length === 0) return getGuildConfig(guildId);
 
   const setClause = entries.map(([key]) => `${key} = ?`).join(', ');

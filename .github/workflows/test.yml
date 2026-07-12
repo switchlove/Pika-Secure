@@ -18,6 +18,10 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run lint
+
+      - run: npm run format:check
+
       - run: npm run coverage
 
       - name: Upload coverage to Coveralls
@@ -25,3 +29,31 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           file: coverage/lcov.info
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Reports known-vulnerable dependencies without failing the build: discord.js currently
+      # pulls in a vulnerable transitive `undici`, and the only fix is a breaking discord.js
+      # downgrade. Dependabot (see .github/dependabot.yml) is what actually drives fixing these
+      # over time; this step exists so vulnerabilities show up in every CI run's logs too.
+      - name: Audit dependencies
+        run: npm audit --omit=dev
+        continue-on-error: true
+
+      - name: Scan for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --only-verified

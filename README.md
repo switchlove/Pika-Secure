@@ -5,10 +5,11 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 A Discord verification/security bot. New members are quarantined on join, screened with a risk score (account age,
-missing avatar, join-burst/raid detection), and must click **Verify** to proceed — risky joins are escalated to an
-image captcha. Unverified members are auto-kicked after a configurable timeout. No general moderation commands are
-included by design; this bot only handles the join-gate. Configuration (`/setup`) is per-server, so a single bot
-process can run across as many servers as it's invited to — see "Running on multiple servers" below.
+missing avatar, join-burst/raid detection, near-duplicate avatar reuse, and coordinated username clustering), and
+must click **Verify** to proceed — risky joins are escalated to an image captcha. Unverified members are auto-kicked
+after a configurable timeout. No general moderation commands are included by design; this bot only handles the
+join-gate. Configuration (`/setup`) is per-server, so a single bot process can run across as many servers as it's
+invited to — see "Running on multiple servers" below.
 
 ## Setup
 
@@ -30,7 +31,10 @@ process can run across as many servers as it's invited to — see "Running on mu
      `Administrator`, `Ban Members`, or `Kick Members` (so staff testing the setup won't get caught). PikaSecure
      also posts a bait message with a seed 🎉 reaction in the channel — reacting to it triggers the same ban, which
      catches bots that auto-react instead of posting.
-   - `/setup thresholds ...` to tune timeouts/risk thresholds as desired
+   - `/setup thresholds ...` to tune timeouts/risk thresholds as desired — this includes
+     `avatar_hamming_threshold` (how visually similar avatars must be to count as near-duplicates) and
+     `username_similarity_count`/`username_similarity_window`/`username_similarity_distance` (how many
+     similarly-named joins within a window count as a coordinated raid)
    - `/setup view` to confirm the current configuration
    - `/setup admins add role:<role>` (optional) — let members with this role run `/setup` without granting them
      Manage Server. `/setup admins remove role:<role>` revokes it, and `/setup admins list` shows the current list.
@@ -93,6 +97,9 @@ repo's built-in `GITHUB_TOKEN`.
 - If you're upgrading an existing deployment, re-run `npm run deploy-commands` (or `:global`) after pulling changes
   that add or modify `/setup` subcommands (e.g. `/setup admins`) — the database schema migrates itself automatically
   on startup, but Discord's command definitions only update when you explicitly redeploy them.
+- Schema changes live as numbered files in `src/database/migrations/` (applied in order, tracked in a
+  `schema_migrations` table so each one runs exactly once). To add a column or table, add a new
+  `NNN_description.sql` file — don't edit an existing one, since already-deployed databases have already applied it.
 - The auto-kick deadline is persisted in SQLite and swept every ~60s (plus once at startup), so it survives bot
   restarts.
 

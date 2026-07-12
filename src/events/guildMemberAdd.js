@@ -8,7 +8,10 @@ module.exports = {
     try {
       await handleMemberJoin(member);
     } catch (err) {
-      logger.error(`Failed to handle join for ${member.id} in guild ${member.guild.id}:`, err.message);
+      logger.error(
+        `Failed to handle join for ${member.id} in guild ${member.guild.id}:`,
+        err.message,
+      );
     }
   },
 };

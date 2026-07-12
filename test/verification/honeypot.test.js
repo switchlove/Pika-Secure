@@ -15,12 +15,20 @@ const HONEYPOT_TRIGGERED_EMBED = { sentinel: 'honeypot-triggered' };
 
 beforeEach(() => {
   bustSrcRequireCache(require);
-  auditLog = injectFakeModule(require, '../../src/database/auditLog.js', { insertAuditLog: vi.fn() });
-  modlog = injectFakeModule(require, '../../src/modlog/modlog.js', { send: vi.fn().mockResolvedValue(undefined) });
+  auditLog = injectFakeModule(require, '../../src/database/auditLog.js', {
+    insertAuditLog: vi.fn(),
+  });
+  modlog = injectFakeModule(require, '../../src/modlog/modlog.js', {
+    send: vi.fn().mockResolvedValue(undefined),
+  });
   embeds = injectFakeModule(require, '../../src/modlog/embeds.js', {
     honeypotTriggeredEmbed: vi.fn().mockReturnValue(HONEYPOT_TRIGGERED_EMBED),
   });
-  logger = injectFakeModule(require, '../../src/utils/logger.js', { warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
   honeypot = require('../../src/verification/honeypot.js');
 });
 
@@ -29,7 +37,9 @@ function makeMember({ banResolves = true } = {}) {
     id: 'user-1',
     guild: { id: 'guild-1' },
     user: { tag: 'user#0001' },
-    ban: banResolves ? vi.fn().mockResolvedValue(undefined) : vi.fn().mockRejectedValue(new Error('missing perms')),
+    ban: banResolves
+      ? vi.fn().mockResolvedValue(undefined)
+      : vi.fn().mockRejectedValue(new Error('missing perms')),
   };
 }
 
@@ -54,7 +64,12 @@ describe('triggerHoneypot', () => {
     await honeypot.triggerHoneypot(member, guildConfig, client, meta);
 
     expect(member.ban).toHaveBeenCalledWith({ reason: 'Triggered honeypot channel (message)' });
-    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'user-1', 'honeypot_triggered', meta);
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      'honeypot_triggered',
+      meta,
+    );
     expect(embeds.honeypotTriggeredEmbed).toHaveBeenCalledWith(member, 'message');
     expect(modlog.send).toHaveBeenCalledWith(client, guildConfig, HONEYPOT_TRIGGERED_EMBED);
   });
