@@ -16,6 +16,7 @@ const {
   syncChannelPermissions,
   syncHoneypotPermissions,
   HONEYPOT_BAIT_EMOJI,
+  DEFAULT_HONEYPOT_BAIT_MESSAGE,
 } = require('../verification/quarantine');
 const { DEFAULT_MESSAGE: DEFAULT_WELCOME_MESSAGE } = require('../welcome/welcome');
 const { flaggedListEmbed, auditLogListEmbed } = require('../modlog/embeds');
@@ -174,6 +175,18 @@ const data = new SlashCommandBuilder()
             { name: 'Math question', value: 'math' },
             { name: 'Random (mix of both)', value: 'random' },
           ),
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName('raid_lockdown_join_count')
+          .setDescription('Extreme burst count that triggers a lockdown. Unset disables it.')
+          .setMinValue(1),
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName('raid_lockdown_duration_minutes')
+          .setDescription('How long a triggered lockdown holds before auto-reverting')
+          .setMinValue(1),
       ),
   )
   .addSubcommand((sub) =>
@@ -206,6 +219,12 @@ const data = new SlashCommandBuilder()
           .setDescription('Decoy channel — anyone who posts here gets banned')
           .addChannelTypes(ChannelType.GuildText)
           .setRequired(true),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName('message')
+          .setDescription('Custom bait embed text (optional) — reduces fingerprintability')
+          .setRequired(false),
       ),
   )
   .addSubcommand((sub) => sub.setName('view').setDescription('View the current configuration'))
@@ -266,12 +285,12 @@ const data = new SlashCommandBuilder()
                 { name: 'captcha_fast_solve_flagged', value: 'captcha_fast_solve_flagged' },
                 { name: 'auto_kicked', value: 'auto_kicked' },
                 { name: 'honeypot_triggered', value: 'honeypot_triggered' },
+                { name: 'raid_lockdown_engaged', value: 'raid_lockdown_engaged' },
+                { name: 'raid_lockdown_lifted', value: 'raid_lockdown_lifted' },
                 { name: 'setup_changed', value: 'setup_changed' },
               ),
           )
-          .addUserOption((opt) =>
-            opt.setName('user').setDescription('Filter to a specific member'),
-          )
+          .addUserOption((opt) => opt.setName('user').setDescription('Filter to a specific member'))
           .addIntegerOption((opt) =>
             opt
               .setName('limit')
@@ -326,6 +345,11 @@ function configEmbed(config, guildVerificationLevel) {
         value: config.honeypot_channel_id ? `<#${config.honeypot_channel_id}>` : 'Not set',
         inline: true,
       },
+      {
+        name: 'Honeypot bait message',
+        value: config.honeypot_bait_message || DEFAULT_HONEYPOT_BAIT_MESSAGE,
+        inline: false,
+      },
       { name: 'Auto-kick timeout', value: `${config.verification_timeout_min} min`, inline: true },
       { name: 'Min account age', value: `${config.min_account_age_days} days`, inline: true },
       {
@@ -366,6 +390,13 @@ function configEmbed(config, guildVerificationLevel) {
       },
       { name: 'Captcha type', value: config.captcha_type, inline: true },
       {
+        name: 'Raid lockdown',
+        value: config.raid_lockdown_join_count_threshold
+          ? `${config.raid_lockdown_join_count_threshold} joins / burst window, holds ${config.raid_lockdown_duration_minutes} min`
+          : 'Disabled (unset)',
+        inline: true,
+      },
+      {
         name: 'Bot admin roles',
         value: config.admin_role_ids.length
           ? config.admin_role_ids.map((id) => `<@&${id}>`).join(', ')
@@ -382,6 +413,25 @@ function configEmbed(config, guildVerificationLevel) {
       name: "⚠️ Server's own Verification Level is low",
       value:
         "This server's built-in Discord Verification Level is None or Low, which requires little more than a Discord account to join. Raising it (Server Settings → Safety Setup) is a free, native layer of defense that works alongside PikaSecure's own gate.",
+      inline: false,
+    });
+  }
+
+  if (config.captcha_type === 'math' || config.captcha_type === 'random') {
+    embed.addFields({
+      name: '⚠️ Captcha type reduces bot-resistance',
+      value:
+        "Math questions are trivially machine-solvable, so with captcha type set to `math` or `random`, normal-risk joins (accounts that don't otherwise trip a raid signal) can get a captcha with essentially no bot-resistance. `image` is the strongest default; only use `math`/`random` if accessibility is a higher priority for your server than raid-resistance.",
+      inline: false,
+    });
+  }
+
+  if (config.raid_lockdown_active) {
+    embed.addFields({
+      name: '🚨 Raid lockdown currently active',
+      value: config.raid_lockdown_expires_at
+        ? `Engaged — auto-reverts <t:${Math.floor(config.raid_lockdown_expires_at / 1000)}:R>.`
+        : 'Engaged.',
       inline: false,
     });
   }
@@ -536,19 +586,21 @@ async function execute(interaction) {
 
   if (sub === 'honeypot') {
     const channel = interaction.options.getChannel('channel');
+    const baitMessage = interaction.options.getString('message');
     const updated = updateGuildConfig(guildId, {
       honeypot_channel_id: channel.id,
+      honeypot_bait_message: baitMessage ?? undefined,
     });
     insertAuditLog(guildId, interaction.user.id, 'setup_changed', {
-      honeypot: { channel: channel.id },
+      honeypot: { channel: channel.id, message: baitMessage ?? undefined },
     });
 
     const failures = await syncHoneypotPermissions(interaction.guild, updated);
 
     try {
-      const message = await channel.send(buildHoneypotBaitPayload());
-      await message.react(HONEYPOT_BAIT_EMOJI);
-      updateGuildConfig(guildId, { honeypot_message_id: message.id });
+      const baitEmbedMessage = await channel.send(buildHoneypotBaitPayload(updated));
+      await baitEmbedMessage.react(HONEYPOT_BAIT_EMOJI);
+      updateGuildConfig(guildId, { honeypot_message_id: baitEmbedMessage.id });
     } catch (err) {
       logger.error(`Failed to post honeypot bait message in guild ${guildId}:`, err.message);
     }
@@ -599,6 +651,10 @@ async function execute(interaction) {
       fast_solve_window_seconds:
         interaction.options.getInteger('fast_solve_window_seconds') ?? undefined,
       captcha_type: interaction.options.getString('captcha_type') ?? undefined,
+      raid_lockdown_join_count_threshold:
+        interaction.options.getInteger('raid_lockdown_join_count') ?? undefined,
+      raid_lockdown_duration_minutes:
+        interaction.options.getInteger('raid_lockdown_duration_minutes') ?? undefined,
     });
     insertAuditLog(guildId, interaction.user.id, 'setup_changed', { thresholds: updated });
     return interaction.reply({ embeds: [embedFor(updated)], flags: MessageFlags.Ephemeral });

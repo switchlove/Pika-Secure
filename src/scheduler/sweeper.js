@@ -1,8 +1,9 @@
 const { RESTJSONErrorCodes } = require('discord.js');
 const { findExpired, markKicked } = require('../database/pendingVerifications');
-const { getGuildConfig } = require('../database/guildConfig');
-const { insertAuditLog } = require('../database/auditLog');
-const { pruneExpired } = require('../database/raidSignalEvents');
+const { getGuildConfig, findActiveLockdowns } = require('../database/guildConfig');
+const { insertAuditLog, pruneExpired: pruneAuditLog } = require('../database/auditLog');
+const { pruneExpired: pruneRaidSignalEvents } = require('../database/raidSignalEvents');
+const raidLockdown = require('../verification/raidLockdown');
 const modlog = require('../modlog/modlog');
 const embeds = require('../modlog/embeds');
 const logger = require('../utils/logger');
@@ -44,10 +45,27 @@ async function sweepOnce(client) {
     }
   }
 
+  for (const guildConfig of findActiveLockdowns()) {
+    try {
+      await raidLockdown.liftIfExpired(client, guildConfig);
+    } catch (err) {
+      logger.error(
+        `Failed to process raid lockdown lift for guild ${guildConfig.guild_id}:`,
+        err.message,
+      );
+    }
+  }
+
   try {
-    pruneExpired();
+    pruneRaidSignalEvents();
   } catch (err) {
     logger.error('Tracker prune failed:', err.message);
+  }
+
+  try {
+    pruneAuditLog();
+  } catch (err) {
+    logger.error('Audit log prune failed:', err.message);
   }
 }
 

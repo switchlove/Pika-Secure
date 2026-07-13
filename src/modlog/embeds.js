@@ -109,6 +109,35 @@ function auditLogListEmbed(entries) {
   return embed;
 }
 
+function raidLockdownEngagedEmbed(burstCount, levelRaised) {
+  const embed = baseEmbed(0xff0000)
+    .setTitle('🚨 Raid lockdown engaged')
+    .setDescription(
+      `${burstCount} joins in a short window crossed the raid lockdown threshold — this is on top of, not instead of, per-member risk scoring and captcha escalation.`,
+    );
+
+  embed.addFields({
+    name: levelRaised ? 'Server verification level raised' : "⚠️ Couldn't raise verification level",
+    value: levelRaised
+      ? 'Temporarily raised — will revert automatically once the lockdown window elapses.'
+      : "Check the bot's **Manage Server** permission; the lockdown alert still fired, but the server's own verification level was left unchanged.",
+  });
+
+  return embed;
+}
+
+function raidLockdownLiftedEmbed(reverted) {
+  const embed = baseEmbed(0x57f287).setTitle('✅ Raid lockdown lifted');
+
+  embed.setDescription(
+    reverted
+      ? 'The lockdown window elapsed — verification level was reverted to what it was before.'
+      : '⚠️ The lockdown window elapsed, but reverting the verification level failed — check it manually.',
+  );
+
+  return embed;
+}
+
 function unconfiguredEmbed(member) {
   return baseEmbed(0xed4245)
     .setTitle('PikaSecure is not configured')
@@ -127,5 +156,7 @@ module.exports = {
   auditLogListEmbed,
   autoKickedEmbed,
   honeypotTriggeredEmbed,
+  raidLockdownEngagedEmbed,
+  raidLockdownLiftedEmbed,
   unconfiguredEmbed,
 };

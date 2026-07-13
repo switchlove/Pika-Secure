@@ -11,6 +11,8 @@ const {
   auditLogListEmbed,
   autoKickedEmbed,
   honeypotTriggeredEmbed,
+  raidLockdownEngagedEmbed,
+  raidLockdownLiftedEmbed,
   unconfiguredEmbed,
 } = embeds;
 
@@ -173,6 +175,35 @@ describe('honeypotTriggeredEmbed', () => {
   it('uses reaction phrasing when trigger is "reaction"', () => {
     const data = honeypotTriggeredEmbed(makeMember(), 'reaction').data;
     expect(data.description).toContain('reacted to the bait message');
+  });
+});
+
+describe('raidLockdownEngagedEmbed', () => {
+  it('reports success when the verification level was raised', () => {
+    const data = raidLockdownEngagedEmbed(20, true).data;
+    expect(data.color).toBe(0xff0000);
+    expect(data.description).toContain('20 joins');
+    expect(data.fields[0].name).toContain('raised');
+    expect(data.fields[0].value).toContain('revert automatically');
+  });
+
+  it('warns when the verification level could not be raised', () => {
+    const data = raidLockdownEngagedEmbed(20, false).data;
+    expect(data.fields[0].name).toContain("Couldn't raise");
+    expect(data.fields[0].value).toContain('Manage Server');
+  });
+});
+
+describe('raidLockdownLiftedEmbed', () => {
+  it('reports success when reverted', () => {
+    const data = raidLockdownLiftedEmbed(true).data;
+    expect(data.color).toBe(0x57f287);
+    expect(data.description).toContain('reverted');
+  });
+
+  it('warns when the revert failed', () => {
+    const data = raidLockdownLiftedEmbed(false).data;
+    expect(data.description).toContain('failed');
   });
 });
 

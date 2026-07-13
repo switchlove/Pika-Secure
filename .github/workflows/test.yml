@@ -44,13 +44,13 @@ jobs:
 
       - run: npm ci
 
-      # Reports known-vulnerable dependencies without failing the build: discord.js currently
-      # pulls in a vulnerable transitive `undici`, and the only fix is a breaking discord.js
-      # downgrade. Dependabot (see .github/dependabot.yml) is what actually drives fixing these
-      # over time; this step exists so vulnerabilities show up in every CI run's logs too.
+      # Fails the build on any moderate+ advisory except the ones explicitly allowlisted in
+      # .audit-ci.json — currently the transitive `undici` vuln via discord.js, whose only fix
+      # is a breaking discord.js downgrade (tracked instead via Dependabot, see
+      # .github/dependabot.yml). Unlike a blanket continue-on-error, this still fails CI if a
+      # *new*, unrelated vulnerability shows up in any dependency.
       - name: Audit dependencies
-        run: npm audit --omit=dev
-        continue-on-error: true
+        run: npm run audit
 
       - name: Scan for secrets
         uses: trufflesecurity/trufflehog@main

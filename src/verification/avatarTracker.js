@@ -2,11 +2,16 @@ const { hammingDistance } = require('./avatarHash');
 const {
   insertEvent,
   countExactValueInWindow,
-  getValuesInWindow,
+  getRecentValuesInWindow,
 } = require('../database/raidSignalEvents');
 
 const EXACT_KIND = 'avatar_exact';
 const PERCEPTUAL_KIND = 'avatar_perceptual';
+
+// Hamming distance is cheap per pair, but still run against every prior row in the window —
+// bounding how many rows we compare against keeps one join's cost bounded even during a huge
+// raid burst. See usernameTracker.js for the same reasoning (it also does O(n) comparisons).
+const MAX_COMPARISONS = 200;
 
 /**
  * Records a member's avatar hash for the guild and returns how many times
@@ -37,7 +42,7 @@ function recordPerceptualHash(guildId, perceptualHash, windowSeconds, hammingThr
   const now = Date.now();
   const cutoff = now - windowSeconds * 1000;
 
-  const priorRows = getValuesInWindow(guildId, PERCEPTUAL_KIND, cutoff);
+  const priorRows = getRecentValuesInWindow(guildId, PERCEPTUAL_KIND, cutoff, MAX_COMPARISONS);
   const nearDuplicateCount = priorRows.filter(
     (row) => hammingDistance(row.value, perceptualHash) <= hammingThreshold,
   ).length;

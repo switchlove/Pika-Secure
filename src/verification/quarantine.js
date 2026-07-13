@@ -121,13 +121,16 @@ function buildGateMessagePayload(guildConfig) {
   return { embeds: [embed], components: [row] };
 }
 
-function buildHoneypotBaitPayload() {
+const DEFAULT_HONEYPOT_BAIT_MESSAGE = `React with ${HONEYPOT_BAIT_EMOJI} below for a chance at a special role and prizes.`;
+
+// The bait text is fixed by default across every deployment of this (open-source) bot, which
+// makes it a fingerprintable tell for anyone who's read the source — letting admins override it
+// per guild means a raid operator can no longer assume "the giveaway embed = the honeypot".
+function buildHoneypotBaitPayload(guildConfig) {
   const embed = new EmbedBuilder()
     .setColor(0xed4245)
     .setTitle('🎉 Exclusive giveaway — react to enter!')
-    .setDescription(
-      `React with ${HONEYPOT_BAIT_EMOJI} below for a chance at a special role and prizes.`,
-    );
+    .setDescription(guildConfig?.honeypot_bait_message || DEFAULT_HONEYPOT_BAIT_MESSAGE);
 
   return { embeds: [embed] };
 }
@@ -140,4 +143,5 @@ module.exports = {
   buildGateMessagePayload,
   buildHoneypotBaitPayload,
   HONEYPOT_BAIT_EMOJI,
+  DEFAULT_HONEYPOT_BAIT_MESSAGE,
 };

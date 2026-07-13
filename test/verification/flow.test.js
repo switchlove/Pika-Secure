@@ -13,6 +13,7 @@ let avatarTracker;
 let avatarHash;
 let usernameTracker;
 let fastSolveTracker;
+let raidLockdown;
 let quarantine;
 let captcha;
 let modlog;
@@ -91,6 +92,10 @@ beforeEach(() => {
 
   fastSolveTracker = injectFakeModule(require, '../../src/verification/fastSolveTracker.js', {
     recordFastSolve: vi.fn().mockReturnValue(1),
+  });
+
+  raidLockdown = injectFakeModule(require, '../../src/verification/raidLockdown.js', {
+    maybeEngage: vi.fn().mockResolvedValue(undefined),
   });
 
   quarantine = injectFakeModule(require, '../../src/verification/quarantine.js', {
@@ -172,13 +177,13 @@ function makeInteraction(overrides = {}) {
 }
 
 describe('handleMemberJoin', () => {
-  it('warns, notifies modlog, and returns early when the guild is not configured', async () => {
+  it('logs an error, notifies modlog, and returns early when the guild is not configured', async () => {
     guildConfigMod.getGuildConfig.mockReturnValue(baseGuildConfig({ unverified_role_id: null }));
     const member = makeMember();
 
     await flow.handleMemberJoin(member);
 
-    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
     expect(modlog.send).toHaveBeenCalledWith(member.client, expect.any(Object), UNCONFIGURED_EMBED);
     expect(pendingVerifications.createPendingVerification).not.toHaveBeenCalled();
   });
@@ -226,6 +231,31 @@ describe('handleMemberJoin', () => {
       reasons: ['low risk'],
     });
     expect(modlog.send).toHaveBeenCalledWith(member.client, guildConfig, JOINED_EMBED);
+  });
+
+  it('evaluates raid lockdown with the burst count for this join', async () => {
+    const guildConfig = baseGuildConfig();
+    guildConfigMod.getGuildConfig.mockReturnValue(guildConfig);
+    joinBurstTracker.recordJoin.mockReturnValue(25);
+    const member = makeMember();
+
+    await flow.handleMemberJoin(member);
+
+    expect(raidLockdown.maybeEngage).toHaveBeenCalledWith(member.guild, guildConfig, 25);
+  });
+
+  it('logs and continues when evaluating raid lockdown throws', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(baseGuildConfig());
+    raidLockdown.maybeEngage.mockRejectedValue(new Error('lockdown exploded'));
+    const member = makeMember();
+
+    await expect(flow.handleMemberJoin(member)).resolves.toBeUndefined();
+
+    expect(logger.error).toHaveBeenCalledWith(
+      'Failed to evaluate raid lockdown for guild guild-1:',
+      'lockdown exploded',
+    );
+    expect(pendingVerifications.createPendingVerification).toHaveBeenCalled();
   });
 
   it('treats a failed perceptual-hash lookup as no signal without blocking the join', async () => {

@@ -8,12 +8,19 @@ let dbPath;
 let db;
 let getGuildConfig;
 let updateGuildConfig;
+let deleteGuildConfig;
+let findActiveLockdowns;
 
 beforeEach(() => {
   dbPath = setupTempDb();
   bustSrcRequireCache(require);
   db = require('../../src/database/db.js');
-  ({ getGuildConfig, updateGuildConfig } = require('../../src/database/guildConfig.js'));
+  ({
+    getGuildConfig,
+    updateGuildConfig,
+    deleteGuildConfig,
+    findActiveLockdowns,
+  } = require('../../src/database/guildConfig.js'));
 });
 
 afterEach(() => {
@@ -117,5 +124,74 @@ describe('updateGuildConfig', () => {
 
     const updated = updateGuildConfig('guild-captcha-type-defaults', { captcha_type: 'math' });
     expect(updated.captcha_type).toBe('math');
+  });
+
+  it('defaults honeypot_bait_message to null and persists an updated value', () => {
+    const defaults = getGuildConfig('guild-bait-defaults');
+    expect(defaults.honeypot_bait_message).toBeNull();
+
+    const updated = updateGuildConfig('guild-bait-defaults', {
+      honeypot_bait_message: 'Custom bait',
+    });
+    expect(updated.honeypot_bait_message).toBe('Custom bait');
+  });
+
+  it('defaults raid lockdown fields to disabled and persists updated values', () => {
+    const defaults = getGuildConfig('guild-lockdown-defaults');
+    expect(defaults.raid_lockdown_join_count_threshold).toBeNull();
+    expect(defaults.raid_lockdown_duration_minutes).toBe(30);
+    expect(defaults.raid_lockdown_active).toBe(0);
+
+    const updated = updateGuildConfig('guild-lockdown-defaults', {
+      raid_lockdown_join_count_threshold: 25,
+      raid_lockdown_duration_minutes: 45,
+      raid_lockdown_active: 1,
+      raid_lockdown_expires_at: 5_000_000,
+      raid_lockdown_previous_verification_level: 2,
+    });
+    expect(updated.raid_lockdown_join_count_threshold).toBe(25);
+    expect(updated.raid_lockdown_duration_minutes).toBe(45);
+    expect(updated.raid_lockdown_active).toBe(1);
+    expect(updated.raid_lockdown_expires_at).toBe(5_000_000);
+    expect(updated.raid_lockdown_previous_verification_level).toBe(2);
+  });
+});
+
+describe('deleteGuildConfig', () => {
+  it('removes the row for the given guild', () => {
+    getGuildConfig('guild-to-delete');
+    deleteGuildConfig('guild-to-delete');
+
+    const recreated = getGuildConfig('guild-to-delete');
+    expect(recreated.created_at).not.toBeNull();
+  });
+
+  it('does not affect other guilds', () => {
+    getGuildConfig('guild-keep');
+    getGuildConfig('guild-remove');
+    deleteGuildConfig('guild-remove');
+
+    const kept = getGuildConfig('guild-keep');
+    expect(kept.guild_id).toBe('guild-keep');
+  });
+});
+
+describe('findActiveLockdowns', () => {
+  it('returns only guilds with an active lockdown', () => {
+    getGuildConfig('guild-inactive');
+    updateGuildConfig('guild-active', { raid_lockdown_active: 1 });
+
+    const active = findActiveLockdowns();
+    expect(active.map((c) => c.guild_id)).toEqual(['guild-active']);
+  });
+
+  it('returns rows with admin_role_ids already parsed from JSON', () => {
+    updateGuildConfig('guild-active-2', {
+      raid_lockdown_active: 1,
+      admin_role_ids: ['role-a'],
+    });
+
+    const [active] = findActiveLockdowns();
+    expect(active.admin_role_ids).toEqual(['role-a']);
   });
 });

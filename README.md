@@ -7,16 +7,19 @@
 A Discord verification/security bot. New members are quarantined on join, screened with a risk score (account age,
 missing avatar, join-burst/raid detection, near-duplicate avatar reuse, and coordinated username clustering), and
 must click **Verify** to proceed — risky joins are escalated to an image captcha. Unverified members are auto-kicked
-after a configurable timeout. No general moderation commands are included by design; this bot only handles the
-join-gate. Configuration (`/setup`) is per-server, so a single bot process can run across as many servers as it's
-invited to — see "Running on multiple servers" below.
+after a configurable timeout. An optional raid-lockdown mode can also temporarily raise the server's own Discord
+verification level during an extreme join burst, auto-reverting once it passes. No general moderation commands are
+included by design otherwise; this bot only handles the join-gate. Configuration (`/setup`) is per-server, so a
+single bot process can run across as many servers as it's invited to — see "Running on multiple servers" below.
 
 ## Setup
 
 1. Create an application at the [Discord Developer Portal](https://discord.com/developers/applications), add a bot
    user, and enable the **Server Members Intent** (Privileged Gateway Intents). Message Content Intent is not needed.
 2. Invite the bot with these permissions: `Manage Roles`, `Kick Members`, `Ban Members`, `View Channel`,
-   `Send Messages`, `Embed Links`, `Attach Files`. Make sure the bot's role sits **above** the unverified role.
+   `Send Messages`, `Embed Links`, `Attach Files`. Make sure the bot's role sits **above** the unverified role. Also
+   grant `Manage Server` if you plan to use the optional raid-lockdown feature (see below) — without it, PikaSecure
+   still posts the lockdown alert to mod-log, it just can't raise the server's verification level automatically.
 3. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_GUILD_ID` (your test
    server's ID, for instant guild-scoped command registration during development).
 4. `npm install`
@@ -32,9 +35,11 @@ invited to — see "Running on multiple servers" below.
      also posts a bait message with a seed 🎉 reaction in the channel — reacting to it triggers the same ban, which
      catches bots that auto-react instead of posting.
    - `/setup thresholds ...` to tune timeouts/risk thresholds as desired — this includes
-     `avatar_hamming_threshold` (how visually similar avatars must be to count as near-duplicates) and
+     `avatar_hamming_threshold` (how visually similar avatars must be to count as near-duplicates),
      `username_similarity_count`/`username_similarity_window`/`username_similarity_distance` (how many
-     similarly-named joins within a window count as a coordinated raid)
+     similarly-named joins within a window count as a coordinated raid), and
+     `raid_lockdown_join_count`/`raid_lockdown_duration_minutes` (an extreme join-burst count that triggers a
+     temporary server-wide lockdown — unset by default, meaning the feature is off until you configure it)
    - `/setup view` to confirm the current configuration
    - `/setup admins add role:<role>` (optional) — let members with this role run `/setup` without granting them
      Manage Server. `/setup admins remove role:<role>` revokes it, and `/setup admins list` shows the current list.

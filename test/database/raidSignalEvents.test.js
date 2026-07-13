@@ -64,6 +64,27 @@ describe('getValuesInWindow', () => {
   });
 });
 
+describe('getRecentValuesInWindow', () => {
+  it('returns rows within the window ordered by created_at when under the limit', () => {
+    raidSignalEvents.insertEvent('g1', 'username', 'raider', 3000);
+    raidSignalEvents.insertEvent('g1', 'username', 'raidr', 1000);
+    raidSignalEvents.insertEvent('g1', 'username', 'stale', 100);
+
+    const rows = raidSignalEvents.getRecentValuesInWindow('g1', 'username', 500, 10);
+    expect(rows.map((r) => r.value)).toEqual(['raidr', 'raider']);
+  });
+
+  it('caps to the most recent `limit` rows, still ordered oldest-first', () => {
+    raidSignalEvents.insertEvent('g1', 'username', 'a', 1000);
+    raidSignalEvents.insertEvent('g1', 'username', 'b', 2000);
+    raidSignalEvents.insertEvent('g1', 'username', 'c', 3000);
+    raidSignalEvents.insertEvent('g1', 'username', 'd', 4000);
+
+    const rows = raidSignalEvents.getRecentValuesInWindow('g1', 'username', 0, 2);
+    expect(rows.map((r) => r.value)).toEqual(['c', 'd']);
+  });
+});
+
 describe('pruneExpired', () => {
   it('removes rows older than the retention ceiling and keeps newer ones', () => {
     const now = 2 * 24 * 60 * 60 * 1000; // day 2

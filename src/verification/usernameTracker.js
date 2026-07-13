@@ -1,6 +1,11 @@
-const { insertEvent, getValuesInWindow } = require('../database/raidSignalEvents');
+const { insertEvent, getRecentValuesInWindow } = require('../database/raidSignalEvents');
 
 const KIND = 'username';
+
+// Levenshtein distance is O(n*m) per pair, run against every prior row in the window — bounding
+// how many rows we compare against keeps one join's cost bounded even during a huge raid burst,
+// rather than degrading toward O(n^2) across the whole burst.
+const MAX_COMPARISONS = 200;
 
 /** Lowercases and strips non-alphanumerics/trailing digits so that names like
  * "Raider_01" and "raider02" normalize to the same base string. */
@@ -45,7 +50,7 @@ function recordUsername(guildId, username, windowSeconds, distanceThreshold) {
   const now = Date.now();
   const cutoff = now - windowSeconds * 1000;
 
-  const priorRows = getValuesInWindow(guildId, KIND, cutoff);
+  const priorRows = getRecentValuesInWindow(guildId, KIND, cutoff, MAX_COMPARISONS);
   const similarCount = priorRows.filter(
     (row) => levenshteinDistance(row.value, normalized) <= distanceThreshold,
   ).length;

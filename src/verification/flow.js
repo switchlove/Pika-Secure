@@ -27,8 +27,14 @@ const { recordAvatar, recordPerceptualHash } = require('./avatarTracker');
 const { computeAvatarHash } = require('./avatarHash');
 const { recordUsername } = require('./usernameTracker');
 const { recordFastSolve } = require('./fastSolveTracker');
+const raidLockdown = require('./raidLockdown');
 const { assignUnverifiedRole, applyVerifiedRoles } = require('./quarantine');
-const { generateChallenge, pickCaptchaType, pickDifficulty, normalizeAnswer } = require('./captcha');
+const {
+  generateChallenge,
+  pickCaptchaType,
+  pickDifficulty,
+  normalizeAnswer,
+} = require('./captcha');
 const modlog = require('../modlog/modlog');
 const embeds = require('../modlog/embeds');
 const welcome = require('../welcome/welcome');
@@ -73,12 +79,22 @@ async function handleMemberJoin(member) {
   const guildConfig = getGuildConfig(member.guild.id);
 
   if (!guildConfig.unverified_role_id || !guildConfig.verification_channel_id) {
-    logger.warn(`Guild ${member.guild.id}: ${member.id} joined but PikaSecure is not configured.`);
+    // Deliberately logger.error (not warn): this member joined completely ungated, which is a
+    // security-relevant gap, not routine chatter — and modlog.send below is a no-op if the
+    // mod-log channel also isn't configured yet (typically true mid-setup), so this console line
+    // may be the only visible signal that joins are currently passing through unquarantined.
+    logger.error(`Guild ${member.guild.id}: ${member.id} joined but PikaSecure is not configured.`);
     await modlog.send(member.client, guildConfig, embeds.unconfiguredEmbed(member));
     return;
   }
 
   const burstCount = recordJoin(member.guild.id, guildConfig.join_burst_window_seconds);
+  try {
+    await raidLockdown.maybeEngage(member.guild, guildConfig, burstCount);
+  } catch (err) {
+    logger.error(`Failed to evaluate raid lockdown for guild ${member.guild.id}:`, err.message);
+  }
+
   const avatarReuseCount = recordAvatar(
     member.guild.id,
     member.user.avatar,

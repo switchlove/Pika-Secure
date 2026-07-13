@@ -8,12 +8,13 @@ let dbPath;
 let db;
 let insertAuditLog;
 let queryAuditLog;
+let pruneExpired;
 
 beforeEach(() => {
   dbPath = setupTempDb();
   bustSrcRequireCache(require);
   db = require('../../src/database/db.js');
-  ({ insertAuditLog, queryAuditLog } = require('../../src/database/auditLog.js'));
+  ({ insertAuditLog, queryAuditLog, pruneExpired } = require('../../src/database/auditLog.js'));
 });
 
 afterEach(() => {
@@ -112,5 +113,33 @@ describe('queryAuditLog', () => {
 
   it('returns an empty array when nothing matches', () => {
     expect(queryAuditLog('guild-empty')).toEqual([]);
+  });
+});
+
+describe('pruneExpired', () => {
+  it('removes rows older than the retention ceiling and keeps newer ones', () => {
+    const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+    const now = RETENTION_MS + 24 * 60 * 60 * 1000;
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(now - RETENTION_MS - 60_000); // just past retention
+      insertAuditLog('guild-1', 'user-1', 'old-event', null);
+      vi.setSystemTime(now - 60_000); // well within retention
+      insertAuditLog('guild-1', 'user-1', 'recent-event', null);
+      vi.setSystemTime(now);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    pruneExpired(now);
+
+    const rows = queryAuditLog('guild-1');
+    expect(rows.map((r) => r.event_type)).toEqual(['recent-event']);
+  });
+
+  it('defaults now to Date.now() when not provided', () => {
+    insertAuditLog('guild-1', 'user-1', 'fresh-event', null);
+    expect(() => pruneExpired()).not.toThrow();
+    expect(queryAuditLog('guild-1')).toHaveLength(1);
   });
 });

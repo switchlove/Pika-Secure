@@ -10,6 +10,8 @@ let modlog;
 let embeds;
 let logger;
 let raidSignalEvents;
+let guildConfigMod;
+let raidLockdown;
 let sweeper;
 
 const AUTO_KICKED_EMBED = { sentinel: 'auto-kicked' };
@@ -26,12 +28,18 @@ beforeEach(() => {
     pruneExpired: vi.fn(),
   });
 
-  injectFakeModule(require, '../../src/database/guildConfig.js', {
+  guildConfigMod = injectFakeModule(require, '../../src/database/guildConfig.js', {
     getGuildConfig: vi.fn().mockReturnValue({ mod_log_channel_id: 'chan-1' }),
+    findActiveLockdowns: vi.fn().mockReturnValue([]),
+  });
+
+  raidLockdown = injectFakeModule(require, '../../src/verification/raidLockdown.js', {
+    liftIfExpired: vi.fn().mockResolvedValue(undefined),
   });
 
   auditLog = injectFakeModule(require, '../../src/database/auditLog.js', {
     insertAuditLog: vi.fn(),
+    pruneExpired: vi.fn(),
   });
 
   modlog = injectFakeModule(require, '../../src/modlog/modlog.js', {
@@ -79,6 +87,48 @@ describe('sweeper.start', () => {
     expect(pendingVerifications.markKicked).not.toHaveBeenCalled();
   });
 
+  it('does nothing lockdown-related when there are no active lockdowns', async () => {
+    const client = makeClient();
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(guildConfigMod.findActiveLockdowns).toHaveBeenCalledTimes(1);
+    expect(raidLockdown.liftIfExpired).not.toHaveBeenCalled();
+  });
+
+  it('processes each active lockdown through raidLockdown.liftIfExpired', async () => {
+    const lockdownA = { guild_id: 'guild-a', raid_lockdown_active: 1 };
+    const lockdownB = { guild_id: 'guild-b', raid_lockdown_active: 1 };
+    guildConfigMod.findActiveLockdowns.mockReturnValue([lockdownA, lockdownB]);
+    const client = makeClient();
+
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(raidLockdown.liftIfExpired).toHaveBeenCalledWith(client, lockdownA);
+    expect(raidLockdown.liftIfExpired).toHaveBeenCalledWith(client, lockdownB);
+  });
+
+  it('logs and continues when one lockdown lift throws — another still completes', async () => {
+    const lockdownBad = { guild_id: 'guild-bad', raid_lockdown_active: 1 };
+    const lockdownGood = { guild_id: 'guild-good', raid_lockdown_active: 1 };
+    guildConfigMod.findActiveLockdowns.mockReturnValue([lockdownBad, lockdownGood]);
+    raidLockdown.liftIfExpired.mockImplementation((client, guildConfig) => {
+      if (guildConfig.guild_id === 'guild-bad') throw new Error('lift exploded');
+      return Promise.resolve();
+    });
+    const client = makeClient();
+
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(logger.error).toHaveBeenCalledWith(
+      'Failed to process raid lockdown lift for guild guild-bad:',
+      'lift exploded',
+    );
+    expect(raidLockdown.liftIfExpired).toHaveBeenCalledWith(client, lockdownGood);
+  });
+
   it('prunes expired tracker rows on each sweep', async () => {
     const client = makeClient();
     sweeper.start(client);
@@ -89,7 +139,17 @@ describe('sweeper.start', () => {
     expect(raidSignalEvents.pruneExpired).toHaveBeenCalledTimes(2);
   });
 
-  it('logs and continues when pruning throws', async () => {
+  it('prunes expired audit log rows on each sweep', async () => {
+    const client = makeClient();
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(auditLog.pruneExpired).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(auditLog.pruneExpired).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs and continues when tracker pruning throws', async () => {
     raidSignalEvents.pruneExpired.mockImplementation(() => {
       throw new Error('prune exploded');
     });
@@ -99,6 +159,18 @@ describe('sweeper.start', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(logger.error).toHaveBeenCalledWith('Tracker prune failed:', 'prune exploded');
+  });
+
+  it('logs and continues when audit log pruning throws', async () => {
+    auditLog.pruneExpired.mockImplementation(() => {
+      throw new Error('audit prune exploded');
+    });
+    const client = makeClient();
+
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(logger.error).toHaveBeenCalledWith('Audit log prune failed:', 'audit prune exploded');
   });
 
   it('kicks the member, marks kicked, audit-logs, and notifies modlog for an expired record', async () => {

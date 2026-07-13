@@ -18,7 +18,8 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "audit": "audit-ci --config .audit-ci.json"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.2",
@@ -31,7 +32,10 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@napi-rs/canvas-win32-x64-msvc": "^1.0.2",
+    "@rolldown/binding-win32-x64-msvc": "^1.1.4",
     "@vitest/coverage-v8": "^4.1.10",
+    "audit-ci": "^7.1.0",
     "eslint": "^10.6.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",

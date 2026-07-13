@@ -108,6 +108,9 @@ describe('db.js', () => {
       '016_add_fast_solve_window_seconds.sql',
       '017_add_captcha_type_guild_config.sql',
       '018_add_captcha_type_pending_verifications.sql',
+      '019_add_audit_log_index.sql',
+      '020_add_honeypot_bait_message.sql',
+      '021_add_raid_lockdown.sql',
     ]);
   });
 
@@ -167,6 +170,6 @@ describe('db.js', () => {
       .prepare('SELECT id FROM schema_migrations ORDER BY id')
       .all()
       .map((row) => row.id);
-    expect(applied).toHaveLength(18);
+    expect(applied).toHaveLength(21);
   });
 });

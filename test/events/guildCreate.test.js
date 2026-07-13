@@ -5,7 +5,11 @@ import { bustSrcRequireCache, injectFakeModule } from '../helpers/moduleCache.js
 const require = createRequire(import.meta.url);
 
 let logger;
+let guildConfigMod;
 let guildCreate;
+
+const CONFIGURED = { unverified_role_id: 'role-1', verification_channel_id: 'chan-1' };
+const UNCONFIGURED = { unverified_role_id: null, verification_channel_id: null };
 
 beforeEach(() => {
   bustSrcRequireCache(require);
@@ -14,20 +18,28 @@ beforeEach(() => {
     error: vi.fn(),
     info: vi.fn(),
   });
+  guildConfigMod = injectFakeModule(require, '../../src/database/guildConfig.js', {
+    getGuildConfig: vi.fn().mockReturnValue(CONFIGURED),
+  });
   guildCreate = require('../../src/events/guildCreate.js');
 });
 
-function makeGuild({ me, fetchMeResolves = me } = {}) {
+function makeGuild({ me, fetchMeResolves = me, systemChannel = null, canSend = true } = {}) {
   return {
     id: 'guild-1',
     members: {
       me,
       fetchMe: vi.fn().mockResolvedValue(fetchMeResolves),
     },
+    systemChannel: systemChannel && {
+      send: vi.fn().mockResolvedValue(undefined),
+      permissionsFor: vi.fn().mockReturnValue({ has: vi.fn().mockReturnValue(canSend) }),
+      ...systemChannel,
+    },
   };
 }
 
-describe('guildCreate.execute', () => {
+describe('guildCreate.execute — bot role color', () => {
   it('does nothing when the bot has no role in the guild', async () => {
     const me = { roles: { botRole: null } };
     const guild = makeGuild({ me });
@@ -61,6 +73,70 @@ describe('guildCreate.execute', () => {
     expect(logger.error).toHaveBeenCalledWith(
       'Failed to set bot role color in guild guild-1:',
       'missing perms',
+    );
+  });
+
+  it('logs and returns early when the bot member itself cannot be resolved', async () => {
+    const guild = makeGuild({
+      me: undefined,
+      fetchMeResolves: undefined,
+    });
+    guild.members.fetchMe.mockRejectedValue(new Error('gateway timeout'));
+
+    await expect(guildCreate.execute(guild)).resolves.toBeUndefined();
+    expect(logger.error).toHaveBeenCalledWith(
+      'Failed to resolve bot member in guild guild-1:',
+      'gateway timeout',
+    );
+  });
+});
+
+describe('guildCreate.execute — setup reminder', () => {
+  const me = { roles: { botRole: null } };
+
+  it('does nothing when the guild is already configured', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(CONFIGURED);
+    const guild = makeGuild({ me, systemChannel: {} });
+
+    await guildCreate.execute(guild);
+
+    expect(guild.systemChannel.send).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when there is no system channel', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(UNCONFIGURED);
+    const guild = makeGuild({ me, systemChannel: null });
+
+    await expect(guildCreate.execute(guild)).resolves.toBeUndefined();
+  });
+
+  it('does nothing when the bot lacks Send Messages in the system channel', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(UNCONFIGURED);
+    const guild = makeGuild({ me, systemChannel: {}, canSend: false });
+
+    await guildCreate.execute(guild);
+
+    expect(guild.systemChannel.send).not.toHaveBeenCalled();
+  });
+
+  it('posts a reminder to the system channel when unconfigured', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(UNCONFIGURED);
+    const guild = makeGuild({ me, systemChannel: {} });
+
+    await guildCreate.execute(guild);
+
+    expect(guild.systemChannel.send).toHaveBeenCalledWith(expect.stringContaining('/setup'));
+  });
+
+  it('catches and logs a rejection instead of throwing', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(UNCONFIGURED);
+    const guild = makeGuild({ me, systemChannel: {} });
+    guild.systemChannel.send.mockRejectedValue(new Error('missing access'));
+
+    await expect(guildCreate.execute(guild)).resolves.toBeUndefined();
+    expect(logger.error).toHaveBeenCalledWith(
+      'Failed to post setup reminder in guild guild-1:',
+      'missing access',
     );
   });
 });

@@ -14,9 +14,11 @@ beforeEach(() => {
   dbPath = setupTempDb();
   bustSrcRequireCache(require);
   db = require('../../src/database/db.js');
-  ({ normalizeUsername, levenshteinDistance, recordUsername } = require(
-    '../../src/verification/usernameTracker.js',
-  ));
+  ({
+    normalizeUsername,
+    levenshteinDistance,
+    recordUsername,
+  } = require('../../src/verification/usernameTracker.js'));
   vi.useFakeTimers();
 });
 

@@ -3,10 +3,16 @@ const db = require('./db');
 const MAX_QUERY_LIMIT = 50;
 const DEFAULT_QUERY_LIMIT = 20;
 
+// Unlike raid_signal_events (pruned to a 24h TTL every sweep), audit log entries are kept much
+// longer since they're the durable record moderators review via `/setup review log` — but still
+// pruned eventually so the table and its index don't grow forever on a long-lived deployment.
+const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
 const insertStmt = db.prepare(`
   INSERT INTO audit_log (guild_id, user_id, event_type, detail, created_at)
   VALUES (?, ?, ?, ?, ?)
 `);
+const pruneStmt = db.prepare('DELETE FROM audit_log WHERE created_at < ?');
 
 function insertAuditLog(guildId, userId, eventType, detail) {
   insertStmt.run(
@@ -41,4 +47,12 @@ function queryAuditLog(guildId, { eventType, userId, limit = DEFAULT_QUERY_LIMIT
     .all(...params);
 }
 
-module.exports = { insertAuditLog, queryAuditLog };
+function pruneExpired(now = Date.now()) {
+  pruneStmt.run(now - RETENTION_MS);
+}
+
+function deleteAllForGuild(guildId) {
+  db.prepare('DELETE FROM audit_log WHERE guild_id = ?').run(guildId);
+}
+
+module.exports = { insertAuditLog, queryAuditLog, pruneExpired, deleteAllForGuild };

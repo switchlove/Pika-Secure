@@ -35,9 +35,25 @@ describe('buildGateMessagePayload', () => {
 });
 
 describe('buildHoneypotBaitPayload', () => {
-  it('builds a bait embed referencing the bait emoji', () => {
+  it('builds a bait embed referencing the bait emoji by default', () => {
     const data = buildHoneypotBaitPayload().embeds[0].data;
     expect(data.color).toBe(0xed4245);
+    expect(data.description).toContain(HONEYPOT_BAIT_EMOJI);
+  });
+
+  it('handles a null/undefined guildConfig via optional chaining', () => {
+    expect(() => buildHoneypotBaitPayload(null)).not.toThrow();
+    expect(() => buildHoneypotBaitPayload(undefined)).not.toThrow();
+  });
+
+  it('uses the guild-configured bait message when set', () => {
+    const data = buildHoneypotBaitPayload({ honeypot_bait_message: 'Custom bait text' }).embeds[0]
+      .data;
+    expect(data.description).toBe('Custom bait text');
+  });
+
+  it('falls back to the default when honeypot_bait_message is not set', () => {
+    const data = buildHoneypotBaitPayload({ honeypot_bait_message: null }).embeds[0].data;
     expect(data.description).toContain(HONEYPOT_BAIT_EMOJI);
   });
 });

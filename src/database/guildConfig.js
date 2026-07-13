@@ -31,6 +31,7 @@ const ALLOWED_FIELDS = new Set([
   'welcome_message',
   'honeypot_channel_id',
   'honeypot_message_id',
+  'honeypot_bait_message',
   'gate_message_id',
   'verification_timeout_min',
   'min_account_age_days',
@@ -49,6 +50,11 @@ const ALLOWED_FIELDS = new Set([
   'fast_solve_window_seconds',
   'captcha_type',
   'admin_role_ids',
+  'raid_lockdown_join_count_threshold',
+  'raid_lockdown_duration_minutes',
+  'raid_lockdown_active',
+  'raid_lockdown_expires_at',
+  'raid_lockdown_previous_verification_level',
 ]);
 
 function updateGuildConfig(guildId, fields) {
@@ -72,4 +78,20 @@ function updateGuildConfig(guildId, fields) {
   return getGuildConfig(guildId);
 }
 
-module.exports = { getGuildConfig, updateGuildConfig };
+function deleteGuildConfig(guildId) {
+  db.prepare('DELETE FROM guild_config WHERE guild_id = ?').run(guildId);
+}
+
+function findActiveLockdowns() {
+  return db
+    .prepare('SELECT * FROM guild_config WHERE raid_lockdown_active = 1')
+    .all()
+    .map(parseRow);
+}
+
+module.exports = {
+  getGuildConfig,
+  updateGuildConfig,
+  deleteGuildConfig,
+  findActiveLockdowns,
+};

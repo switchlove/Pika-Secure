@@ -112,6 +112,10 @@ function findFlagged(guildId, limit = 20) {
     .all(guildId, cappedLimit);
 }
 
+function deleteAllForGuild(guildId) {
+  db.prepare('DELETE FROM pending_verifications WHERE guild_id = ?').run(guildId);
+}
+
 module.exports = {
   createPendingVerification,
   getPendingVerification,
@@ -123,4 +127,5 @@ module.exports = {
   markKicked,
   findExpired,
   findFlagged,
+  deleteAllForGuild,
 };

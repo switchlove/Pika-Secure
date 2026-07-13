@@ -27,6 +27,7 @@ function baseConfig(overrides = {}) {
     mod_log_channel_id: null,
     honeypot_channel_id: null,
     honeypot_message_id: null,
+    honeypot_bait_message: null,
     gate_message_id: null,
     verification_timeout_min: 15,
     min_account_age_days: 7,
@@ -45,6 +46,11 @@ function baseConfig(overrides = {}) {
     fast_solve_window_seconds: 300,
     captcha_type: 'image',
     admin_role_ids: [],
+    raid_lockdown_join_count_threshold: null,
+    raid_lockdown_duration_minutes: 30,
+    raid_lockdown_active: 0,
+    raid_lockdown_expires_at: null,
+    raid_lockdown_previous_verification_level: null,
     ...overrides,
   };
 }
@@ -82,6 +88,7 @@ beforeEach(() => {
     syncChannelPermissions: vi.fn().mockResolvedValue([]),
     syncHoneypotPermissions: vi.fn().mockResolvedValue([]),
     HONEYPOT_BAIT_EMOJI: '🎉',
+    DEFAULT_HONEYPOT_BAIT_MESSAGE: 'React with 🎉 below for a chance at a special role and prizes.',
   });
 
   logger = injectFakeModule(require, '../../src/utils/logger.js', {
@@ -355,15 +362,40 @@ describe('execute — honeypot', () => {
 
     expect(guildConfigMod.updateGuildConfig).toHaveBeenNthCalledWith(1, 'guild-1', {
       honeypot_channel_id: 'chan-h',
+      honeypot_bait_message: undefined,
     });
     expect(quarantine.syncHoneypotPermissions).toHaveBeenCalledWith(
       interaction.guild,
       expect.any(Object),
     );
+    expect(quarantine.buildHoneypotBaitPayload).toHaveBeenCalledWith(expect.any(Object));
     expect(honeypotChannel.send).toHaveBeenCalledWith(BAIT_PAYLOAD);
     expect(baitMessage.react).toHaveBeenCalledWith('🎉');
     expect(guildConfigMod.updateGuildConfig).toHaveBeenNthCalledWith(2, 'guild-1', {
       honeypot_message_id: 'bait-msg-1',
+    });
+  });
+
+  it('passes a custom bait message through to updateGuildConfig and the audit log', async () => {
+    const baitMessage = { id: 'bait-msg-1', react: vi.fn().mockResolvedValue(undefined) };
+    const honeypotChannel = { id: 'chan-h', send: vi.fn().mockResolvedValue(baitMessage) };
+    guildConfigMod.updateGuildConfig.mockReturnValue(
+      baseConfig({ honeypot_channel_id: 'chan-h', honeypot_bait_message: 'Custom bait text' }),
+    );
+    const interaction = makeInteraction({
+      sub: 'honeypot',
+      channelOptions: { channel: honeypotChannel },
+      stringOptions: { message: 'Custom bait text' },
+    });
+
+    await setup.execute(interaction);
+
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenNthCalledWith(1, 'guild-1', {
+      honeypot_channel_id: 'chan-h',
+      honeypot_bait_message: 'Custom bait text',
+    });
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'admin-user', 'setup_changed', {
+      honeypot: { channel: 'chan-h', message: 'Custom bait text' },
     });
   });
 
@@ -481,6 +513,8 @@ describe('execute — thresholds', () => {
         username_similarity_distance: 3,
         fast_solve_count: 6,
         fast_solve_window_seconds: 240,
+        raid_lockdown_join_count: 25,
+        raid_lockdown_duration_minutes: 45,
       },
       stringOptions: { captcha_type: 'math' },
     });
@@ -504,6 +538,8 @@ describe('execute — thresholds', () => {
       fast_solve_count_threshold: 6,
       fast_solve_window_seconds: 240,
       captcha_type: 'math',
+      raid_lockdown_join_count_threshold: 25,
+      raid_lockdown_duration_minutes: 45,
     });
   });
 
@@ -577,6 +613,45 @@ describe('execute — view', () => {
     expect(fields.some((f) => f.name.includes('Verification Level is low'))).toBe(true);
   });
 
+  it('shows raid lockdown as disabled by default', async () => {
+    const interaction = makeInteraction({ sub: 'view' });
+
+    await setup.execute(interaction);
+
+    const embed = interaction.reply.mock.calls[0][0].embeds[0];
+    const fields = embed.data.fields;
+    expect(fields.find((f) => f.name === 'Raid lockdown').value).toBe('Disabled (unset)');
+    expect(fields.some((f) => f.name.includes('Raid lockdown currently active'))).toBe(false);
+  });
+
+  it('shows the configured raid lockdown threshold/duration when set', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ raid_lockdown_join_count_threshold: 25, raid_lockdown_duration_minutes: 45 }),
+    );
+    const interaction = makeInteraction({ sub: 'view' });
+
+    await setup.execute(interaction);
+
+    const embed = interaction.reply.mock.calls[0][0].embeds[0];
+    const fields = embed.data.fields;
+    expect(fields.find((f) => f.name === 'Raid lockdown').value).toBe(
+      '25 joins / burst window, holds 45 min',
+    );
+  });
+
+  it('warns when a raid lockdown is currently active', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ raid_lockdown_active: 1, raid_lockdown_expires_at: 1_999_999_999_000 }),
+    );
+    const interaction = makeInteraction({ sub: 'view' });
+
+    await setup.execute(interaction);
+
+    const embed = interaction.reply.mock.calls[0][0].embeds[0];
+    const fields = embed.data.fields;
+    expect(fields.some((f) => f.name.includes('Raid lockdown currently active'))).toBe(true);
+  });
+
   it('does not warn when the server verification level is not low', async () => {
     const interaction = makeInteraction({
       sub: 'view',
@@ -588,6 +663,30 @@ describe('execute — view', () => {
     const embed = interaction.reply.mock.calls[0][0].embeds[0];
     const fields = embed.data.fields;
     expect(fields.some((f) => f.name.includes('Verification Level is low'))).toBe(false);
+  });
+
+  it.each(['math', 'random'])(
+    'warns when captcha_type is %s (reduced bot-resistance)',
+    async (captchaType) => {
+      guildConfigMod.getGuildConfig.mockReturnValue(baseConfig({ captcha_type: captchaType }));
+      const interaction = makeInteraction({ sub: 'view' });
+
+      await setup.execute(interaction);
+
+      const embed = interaction.reply.mock.calls[0][0].embeds[0];
+      const fields = embed.data.fields;
+      expect(fields.some((f) => f.name.includes('Captcha type reduces bot-resistance'))).toBe(true);
+    },
+  );
+
+  it('does not warn about captcha type when it is image', async () => {
+    const interaction = makeInteraction({ sub: 'view' });
+
+    await setup.execute(interaction);
+
+    const embed = interaction.reply.mock.calls[0][0].embeds[0];
+    const fields = embed.data.fields;
+    expect(fields.some((f) => f.name.includes('Captcha type reduces bot-resistance'))).toBe(false);
   });
 });
 
