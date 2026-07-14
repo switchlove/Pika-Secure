@@ -304,7 +304,10 @@ describe('liftIfExpired', () => {
           resolveFetch = resolve;
         }),
     );
-    const guildConfig = baseGuildConfig({ raid_lockdown_active: 1, raid_lockdown_expires_at: 1_000_000 });
+    const guildConfig = baseGuildConfig({
+      raid_lockdown_active: 1,
+      raid_lockdown_expires_at: 1_000_000,
+    });
 
     const firstCall = raidLockdown.liftIfExpired(client, guildConfig);
     await raidLockdown.liftIfExpired(client, guildConfig);
