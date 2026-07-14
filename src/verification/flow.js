@@ -50,6 +50,33 @@ const MIN_RESUBMIT_MS = 1000;
 // captchas (and spamming the modlog) instead of solving the one already shown.
 const MIN_RECAPTCHA_MS = 5000;
 
+// Guards handleVerifyButtonClick/handleCaptchaModalSubmit against a double-click or a fast
+// resubmit racing the same member's verification through two overlapping invocations before the
+// first has written its state change (getPendingVerification is a stale read until then) — both
+// would otherwise pass the same state check and duplicate a role grant, welcome message, or
+// audit-log entry. Single-process, in-memory lock is sufficient since the bot is one process.
+const inFlightVerifications = new Set();
+
+function verificationLockKey(guildId, userId) {
+  return `${guildId}:${userId}`;
+}
+
+async function withVerificationLock(interaction, handler) {
+  const key = verificationLockKey(interaction.guild.id, interaction.user.id);
+  if (inFlightVerifications.has(key)) {
+    return interaction.reply({
+      content: 'Still processing your previous request — please wait a moment.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  inFlightVerifications.add(key);
+  try {
+    return await handler();
+  } finally {
+    inFlightVerifications.delete(key);
+  }
+}
+
 // Best-effort perceptual-hash lookup: never lets a slow/failed CDN fetch
 // block or delay the join-gate — falls back to "no signal" on any error.
 async function getPerceptualAvatarMatchCount(member, guildConfig) {
@@ -200,51 +227,53 @@ async function presentCaptcha(interaction, guildConfig, riskScore) {
 }
 
 async function handleVerifyButtonClick(interaction) {
-  const guildConfig = getGuildConfig(interaction.guild.id);
-  const record = getPendingVerification(interaction.guild.id, interaction.user.id);
+  return withVerificationLock(interaction, async () => {
+    const guildConfig = getGuildConfig(interaction.guild.id);
+    const record = getPendingVerification(interaction.guild.id, interaction.user.id);
 
-  if (!record) {
-    return interaction.reply({
-      content: 'There is nothing to verify — try rejoining the server.',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-  if (record.state === 'verified') {
-    return interaction.reply({
-      content: 'You are already verified.',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-  if (record.state === 'kicked') {
-    return interaction.reply({
-      content: 'Your verification window expired. Please contact a moderator.',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-  if (record.state === 'flagged') {
-    return interaction.reply({
-      content: 'Too many failed attempts — a moderator has been notified to review your case.',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
+    if (!record) {
+      return interaction.reply({
+        content: 'There is nothing to verify — try rejoining the server.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    if (record.state === 'verified') {
+      return interaction.reply({
+        content: 'You are already verified.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    if (record.state === 'kicked') {
+      return interaction.reply({
+        content: 'Your verification window expired. Please contact a moderator.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    if (record.state === 'flagged') {
+      return interaction.reply({
+        content: 'Too many failed attempts — a moderator has been notified to review your case.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
 
-  if (record.state === 'pending' && record.risk_score < guildConfig.captcha_risk_threshold) {
-    await verifyMember(interaction.member, guildConfig, false);
-    return interaction.reply({
-      content: 'You have been verified. Welcome!',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
+    if (record.state === 'pending' && record.risk_score < guildConfig.captcha_risk_threshold) {
+      await verifyMember(interaction.member, guildConfig, false);
+      return interaction.reply({
+        content: 'You have been verified. Welcome!',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
 
-  if (record.state === 'captcha' && Date.now() - record.updated_at < MIN_RECAPTCHA_MS) {
-    return interaction.reply({
-      content:
-        'You already have an active captcha — click **Enter Code** above, or wait a moment before requesting a new one.',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
+    if (record.state === 'captcha' && Date.now() - record.updated_at < MIN_RECAPTCHA_MS) {
+      return interaction.reply({
+        content:
+          'You already have an active captcha — click **Enter Code** above, or wait a moment before requesting a new one.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
 
-  return presentCaptcha(interaction, guildConfig, record.risk_score);
+    return presentCaptcha(interaction, guildConfig, record.risk_score);
+  });
 }
 
 async function handleCaptchaModalOpen(interaction) {
@@ -276,100 +305,102 @@ async function handleCaptchaModalOpen(interaction) {
 }
 
 async function handleCaptchaModalSubmit(interaction) {
-  const guildConfig = getGuildConfig(interaction.guild.id);
-  const record = getPendingVerification(interaction.guild.id, interaction.user.id);
+  return withVerificationLock(interaction, async () => {
+    const guildConfig = getGuildConfig(interaction.guild.id);
+    const record = getPendingVerification(interaction.guild.id, interaction.user.id);
 
-  if (!record || record.state !== 'captcha') {
-    return interaction.reply({
-      content: 'No active captcha to solve — click Verify again.',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-
-  const latencyMs = Date.now() - record.updated_at;
-  if (latencyMs < MIN_RESUBMIT_MS) {
-    return interaction.reply({
-      content: 'Please wait a moment before trying again.',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-
-  const submitted = normalizeAnswer(interaction.fields.getTextInputValue('captcha:answer'));
-  if (submitted === record.captcha_answer) {
-    const fastSolve = latencyMs < MIN_HUMAN_SOLVE_MS;
-    const repeatFastSolveCount = fastSolve
-      ? recordFastSolve(interaction.guild.id, guildConfig.fast_solve_window_seconds)
-      : 0;
-
-    if (repeatFastSolveCount > guildConfig.fast_solve_count_threshold) {
-      flagPendingVerification(interaction.guild.id, interaction.user.id);
-      insertAuditLog(interaction.guild.id, interaction.user.id, 'captcha_fast_solve_flagged', {
-        latencyMs,
-        repeatFastSolveCount,
-      });
-      await modlog.send(
-        interaction.client,
-        guildConfig,
-        embeds.fastSolveFlaggedEmbed(interaction.member, latencyMs, repeatFastSolveCount),
-      );
+    if (!record || record.state !== 'captcha') {
       return interaction.reply({
-        content:
-          'Correct — but this verification pattern needs manual review. A moderator has been notified.',
+        content: 'No active captcha to solve — click Verify again.',
         flags: MessageFlags.Ephemeral,
       });
     }
 
-    await verifyMember(interaction.member, guildConfig, true, latencyMs);
-    return interaction.reply({
-      content: 'Correct! You have been verified. Welcome!',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
+    const latencyMs = Date.now() - record.updated_at;
+    if (latencyMs < MIN_RESUBMIT_MS) {
+      return interaction.reply({
+        content: 'Please wait a moment before trying again.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
 
-  const attempts = record.captcha_attempts + 1;
-  const flagged = attempts >= guildConfig.max_captcha_attempts;
-  const difficulty = pickDifficulty(record.risk_score, guildConfig.hard_captcha_risk_threshold);
-  const nextType = flagged ? null : pickCaptchaType(guildConfig.captcha_type, difficulty);
-  const nextChallenge = flagged ? null : generateChallenge(nextType, difficulty);
+    const submitted = normalizeAnswer(interaction.fields.getTextInputValue('captcha:answer'));
+    if (submitted === record.captcha_answer) {
+      const fastSolve = latencyMs < MIN_HUMAN_SOLVE_MS;
+      const repeatFastSolveCount = fastSolve
+        ? recordFastSolve(interaction.guild.id, guildConfig.fast_solve_window_seconds)
+        : 0;
 
-  recordCaptchaFailure(
-    interaction.guild.id,
-    interaction.user.id,
-    nextChallenge ? nextChallenge.answer : null,
-    flagged,
-    nextChallenge ? nextChallenge.type : null,
-  );
-  insertAuditLog(
-    interaction.guild.id,
-    interaction.user.id,
-    flagged ? 'captcha_max_failed' : 'captcha_failed',
-    { attempts },
-  );
-  await modlog.send(
-    interaction.client,
-    guildConfig,
-    embeds.captchaFailedEmbed(
-      interaction.member,
-      attempts,
-      guildConfig.max_captcha_attempts,
+      if (repeatFastSolveCount > guildConfig.fast_solve_count_threshold) {
+        flagPendingVerification(interaction.guild.id, interaction.user.id);
+        insertAuditLog(interaction.guild.id, interaction.user.id, 'captcha_fast_solve_flagged', {
+          latencyMs,
+          repeatFastSolveCount,
+        });
+        await modlog.send(
+          interaction.client,
+          guildConfig,
+          embeds.fastSolveFlaggedEmbed(interaction.member, latencyMs, repeatFastSolveCount),
+        );
+        return interaction.reply({
+          content:
+            'Correct — but this verification pattern needs manual review. A moderator has been notified.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      await verifyMember(interaction.member, guildConfig, true, latencyMs);
+      return interaction.reply({
+        content: 'Correct! You have been verified. Welcome!',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    const attempts = record.captcha_attempts + 1;
+    const flagged = attempts >= guildConfig.max_captcha_attempts;
+    const difficulty = pickDifficulty(record.risk_score, guildConfig.hard_captcha_risk_threshold);
+    const nextType = flagged ? null : pickCaptchaType(guildConfig.captcha_type, difficulty);
+    const nextChallenge = flagged ? null : generateChallenge(nextType, difficulty);
+
+    recordCaptchaFailure(
+      interaction.guild.id,
+      interaction.user.id,
+      nextChallenge ? nextChallenge.answer : null,
       flagged,
-    ),
-  );
+      nextChallenge ? nextChallenge.type : null,
+    );
+    insertAuditLog(
+      interaction.guild.id,
+      interaction.user.id,
+      flagged ? 'captcha_max_failed' : 'captcha_failed',
+      { attempts },
+    );
+    await modlog.send(
+      interaction.client,
+      guildConfig,
+      embeds.captchaFailedEmbed(
+        interaction.member,
+        attempts,
+        guildConfig.max_captcha_attempts,
+        flagged,
+      ),
+    );
 
-  if (flagged) {
-    return interaction.reply({
-      content:
-        'Incorrect — too many failed attempts. A moderator has been notified to review your case.',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
+    if (flagged) {
+      return interaction.reply({
+        content:
+          'Incorrect — too many failed attempts. A moderator has been notified to review your case.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
 
-  const payload = buildCaptchaPayload(
-    nextChallenge,
-    'Incorrect — try again',
-    `Attempt ${attempts}/${guildConfig.max_captcha_attempts}. A new code has been generated.`,
-  );
-  return interaction.reply(payload);
+    const payload = buildCaptchaPayload(
+      nextChallenge,
+      'Incorrect — try again',
+      `Attempt ${attempts}/${guildConfig.max_captcha_attempts}. A new code has been generated.`,
+    );
+    return interaction.reply(payload);
+  });
 }
 
 module.exports = {

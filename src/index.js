@@ -40,4 +40,19 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-client.login(token);
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`Received ${signal}, shutting down.`);
+  client.destroy();
+  process.exit(0);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+client.login(token).catch((err) => {
+  logger.error('Failed to log in:', err.message);
+  process.exit(1);
+});

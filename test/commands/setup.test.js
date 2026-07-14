@@ -567,6 +567,22 @@ describe('execute — thresholds', () => {
       captcha_type: undefined,
     });
   });
+
+  it('audit-logs only the fields that were actually changed, not the entire updated config row', async () => {
+    const interaction = makeInteraction({
+      sub: 'thresholds',
+      integerOptions: { timeout_minutes: 30, max_captcha_attempts: 5 },
+    });
+
+    await setup.execute(interaction);
+
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'admin-user', 'setup_changed', {
+      thresholds: {
+        verification_timeout_min: 30,
+        max_captcha_attempts: 5,
+      },
+    });
+  });
 });
 
 describe('execute — view', () => {

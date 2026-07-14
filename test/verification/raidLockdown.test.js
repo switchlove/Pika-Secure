@@ -159,6 +159,27 @@ describe('maybeEngage', () => {
     );
     expect(embeds.raidLockdownEngagedEmbed).toHaveBeenCalledWith(20, false);
   });
+
+  it('ignores a second overlapping call for the same guild while the first is still engaging', async () => {
+    const guild = makeGuild({ verificationLevel: GuildVerificationLevel.Low });
+    let resolveSetLevel;
+    guild.setVerificationLevel = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveSetLevel = resolve;
+        }),
+    );
+
+    const firstCall = raidLockdown.maybeEngage(guild, baseGuildConfig(), 20);
+    await raidLockdown.maybeEngage(guild, baseGuildConfig(), 20);
+
+    expect(guildConfigMod.updateGuildConfig).not.toHaveBeenCalled();
+
+    resolveSetLevel();
+    await firstCall;
+
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('liftIfExpired', () => {
@@ -270,6 +291,30 @@ describe('liftIfExpired', () => {
     });
     expect(embeds.raidLockdownLiftedEmbed).toHaveBeenCalledWith(false);
 
+    vi.useRealTimers();
+  });
+
+  it('ignores a second overlapping call for the same guild while the first is still lifting', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000_000);
+    let resolveFetch;
+    const client = makeClient(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    const guildConfig = baseGuildConfig({ raid_lockdown_active: 1, raid_lockdown_expires_at: 1_000_000 });
+
+    const firstCall = raidLockdown.liftIfExpired(client, guildConfig);
+    await raidLockdown.liftIfExpired(client, guildConfig);
+
+    expect(client.guilds.fetch).toHaveBeenCalledTimes(1);
+
+    resolveFetch(makeGuild());
+    await firstCall;
+
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 });

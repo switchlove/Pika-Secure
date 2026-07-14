@@ -1,15 +1,35 @@
-import { describe, it, expect, vi } from 'vitest';
-import quarantine from '../../src/verification/quarantine.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createRequire } from 'node:module';
+import { bustSrcRequireCache, injectFakeModule } from '../helpers/moduleCache.js';
 
-const {
-  assignUnverifiedRole,
-  applyVerifiedRoles,
-  syncChannelPermissions,
-  syncHoneypotPermissions,
-  buildGateMessagePayload,
-  buildHoneypotBaitPayload,
-  HONEYPOT_BAIT_EMOJI,
-} = quarantine;
+const require = createRequire(import.meta.url);
+
+let logger;
+let assignUnverifiedRole;
+let applyVerifiedRoles;
+let syncChannelPermissions;
+let syncHoneypotPermissions;
+let buildGateMessagePayload;
+let buildHoneypotBaitPayload;
+let HONEYPOT_BAIT_EMOJI;
+
+beforeEach(() => {
+  bustSrcRequireCache(require);
+  logger = injectFakeModule(require, '../../src/utils/logger.js', {
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  });
+  ({
+    assignUnverifiedRole,
+    applyVerifiedRoles,
+    syncChannelPermissions,
+    syncHoneypotPermissions,
+    buildGateMessagePayload,
+    buildHoneypotBaitPayload,
+    HONEYPOT_BAIT_EMOJI,
+  } = require('../../src/verification/quarantine.js'));
+});
 
 describe('buildGateMessagePayload', () => {
   it('includes the honeypot warning when a honeypot channel is configured', () => {
@@ -66,6 +86,8 @@ describe('HONEYPOT_BAIT_EMOJI', () => {
 
 function makeMember() {
   return {
+    id: 'user-1',
+    guild: { id: 'guild-1' },
     roles: {
       add: vi.fn().mockResolvedValue(undefined),
       remove: vi.fn().mockResolvedValue(undefined),
@@ -116,20 +138,28 @@ describe('applyVerifiedRoles', () => {
     expect(member.roles.add).toHaveBeenCalledWith('role-v');
   });
 
-  it('swallows a rejected roles.remove', async () => {
+  it('swallows a rejected roles.remove and logs a warning', async () => {
     const member = makeMember();
     member.roles.remove.mockRejectedValue(new Error('no perms'));
     await expect(
       applyVerifiedRoles(member, { unverified_role_id: 'role-u' }),
     ).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Failed to remove unverified role from user-1 in guild guild-1:',
+      'no perms',
+    );
   });
 
-  it('swallows a rejected roles.add', async () => {
+  it('swallows a rejected roles.add and logs a warning', async () => {
     const member = makeMember();
     member.roles.add.mockRejectedValue(new Error('no perms'));
     await expect(
       applyVerifiedRoles(member, { verified_role_id: 'role-v' }),
     ).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Failed to add verified role to user-1 in guild guild-1:',
+      'no perms',
+    );
   });
 });
 

@@ -14,9 +14,16 @@ function timestamp() {
   return new Date().toISOString();
 }
 
+// Collapses embedded newlines so a single logged value can't inject extra lines into the file
+// log (e.g. a crafted username or error message forging a fake "[TIMESTAMP] [LEVEL]" entry).
+// Escaped rather than stripped so the original content is still fully recoverable.
+function sanitizeForLog(str) {
+  return str.replace(/\r\n|\r|\n/g, '\\n');
+}
+
 function formatArg(arg) {
-  if (arg instanceof Error) return arg.stack || arg.message;
-  return typeof arg === 'string' ? arg : JSON.stringify(arg);
+  if (arg instanceof Error) return sanitizeForLog(arg.stack || arg.message);
+  return typeof arg === 'string' ? sanitizeForLog(arg) : JSON.stringify(arg);
 }
 
 function writeToFile(levelLabel, args) {

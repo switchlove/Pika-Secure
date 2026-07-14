@@ -625,7 +625,7 @@ async function execute(interaction) {
   }
 
   if (sub === 'thresholds') {
-    const updated = updateGuildConfig(guildId, {
+    const fields = {
       verification_timeout_min: interaction.options.getInteger('timeout_minutes') ?? undefined,
       min_account_age_days: interaction.options.getInteger('min_account_age_days') ?? undefined,
       join_burst_count_threshold: interaction.options.getInteger('join_burst_count') ?? undefined,
@@ -655,8 +655,12 @@ async function execute(interaction) {
         interaction.options.getInteger('raid_lockdown_join_count') ?? undefined,
       raid_lockdown_duration_minutes:
         interaction.options.getInteger('raid_lockdown_duration_minutes') ?? undefined,
-    });
-    insertAuditLog(guildId, interaction.user.id, 'setup_changed', { thresholds: updated });
+    };
+    const updated = updateGuildConfig(guildId, fields);
+    const changed = Object.fromEntries(
+      Object.entries(fields).filter(([, value]) => value !== undefined),
+    );
+    insertAuditLog(guildId, interaction.user.id, 'setup_changed', { thresholds: changed });
     return interaction.reply({ embeds: [embedFor(updated)], flags: MessageFlags.Ephemeral });
   }
 

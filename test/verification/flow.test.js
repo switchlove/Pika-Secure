@@ -450,6 +450,42 @@ describe('handleVerifyButtonClick', () => {
     expect(payload.files).toEqual([]);
     expect(payload.embeds[0].data.description).toContain('What is 4 + 5?');
   });
+
+  it('rejects a second overlapping click while the first is still in flight, then allows a new one after it finishes', async () => {
+    const guildConfig = baseGuildConfig({ captcha_risk_threshold: 50 });
+    guildConfigMod.getGuildConfig.mockReturnValue(guildConfig);
+    pendingVerifications.getPendingVerification.mockReturnValue({
+      state: 'pending',
+      risk_score: 20,
+    });
+    const interaction = makeInteraction();
+
+    let resolveApply;
+    quarantine.applyVerifiedRoles.mockReturnValue(
+      new Promise((resolve) => {
+        resolveApply = resolve;
+      }),
+    );
+
+    const firstCall = flow.handleVerifyButtonClick(interaction);
+    await flow.handleVerifyButtonClick(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('processing') }),
+    );
+    expect(pendingVerifications.markVerified).not.toHaveBeenCalled();
+
+    resolveApply();
+    await firstCall;
+
+    expect(pendingVerifications.markVerified).toHaveBeenCalledWith('guild-1', 'user-1');
+
+    interaction.reply.mockClear();
+    await flow.handleVerifyButtonClick(interaction);
+    expect(interaction.reply).not.toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('processing') }),
+    );
+  });
 });
 
 describe('handleCaptchaModalOpen', () => {

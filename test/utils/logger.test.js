@@ -147,6 +147,36 @@ describe('LOG_DIR file logging', () => {
     expect(content).toContain('{"detail":42}');
   });
 
+  it('escapes embedded newlines in a string arg so it cannot forge extra log lines', async () => {
+    process.env.LOG_DIR = tmpDir;
+    vi.resetModules();
+    const { default: scopedLogger } = await import('../../src/utils/logger.js');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    scopedLogger.warn('evil user: "\n[2020-01-01T00:00:00.000Z] [ERROR] fake entry"');
+
+    const files = fs.readdirSync(tmpDir);
+    const content = fs.readFileSync(path.join(tmpDir, files[0]), 'utf8');
+    const lines = content.trim().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('\\n[2020-01-01T00:00:00.000Z] [ERROR] fake entry');
+  });
+
+  it('escapes embedded newlines in an Error stack written to the file', async () => {
+    process.env.LOG_DIR = tmpDir;
+    vi.resetModules();
+    const { default: scopedLogger } = await import('../../src/utils/logger.js');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    scopedLogger.error(new Error('boom'));
+
+    const files = fs.readdirSync(tmpDir);
+    const content = fs.readFileSync(path.join(tmpDir, files[0]), 'utf8');
+    const lines = content.trim().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Error: boom');
+  });
+
   it('does not write info lines to the file', async () => {
     process.env.LOG_DIR = tmpDir;
     vi.resetModules();

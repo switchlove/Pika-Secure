@@ -1,16 +1,31 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const logger = require('../utils/logger');
 
 async function assignUnverifiedRole(member, guildConfig) {
   if (!guildConfig.unverified_role_id) return;
   await member.roles.add(guildConfig.unverified_role_id);
 }
 
+// Role grants/removals here are best-effort (a missing Manage Roles permission or a deleted role
+// shouldn't block the rest of verification), but a silent failure would otherwise leave a member
+// marked verified and welcomed while never actually receiving the verified role, with no trace to
+// debug it — so failures are logged rather than swallowed outright.
 async function applyVerifiedRoles(member, guildConfig) {
   if (guildConfig.unverified_role_id) {
-    await member.roles.remove(guildConfig.unverified_role_id).catch(() => {});
+    await member.roles.remove(guildConfig.unverified_role_id).catch((err) => {
+      logger.warn(
+        `Failed to remove unverified role from ${member.id} in guild ${member.guild.id}:`,
+        err.message,
+      );
+    });
   }
   if (guildConfig.verified_role_id) {
-    await member.roles.add(guildConfig.verified_role_id).catch(() => {});
+    await member.roles.add(guildConfig.verified_role_id).catch((err) => {
+      logger.warn(
+        `Failed to add verified role to ${member.id} in guild ${member.guild.id}:`,
+        err.message,
+      );
+    });
   }
 }
 

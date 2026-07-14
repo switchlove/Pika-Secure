@@ -89,6 +89,32 @@ describe('migrate.runMigrations', () => {
     expect(appliedIds()).toEqual(['001_add_col.sql']);
   });
 
+  it('still applies the remaining statements of a multi-statement migration when an earlier one is a pre-existing column', () => {
+    db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT)');
+    writeMigration(
+      '001_multi.sql',
+      'ALTER TABLE t ADD COLUMN a TEXT;\nALTER TABLE t ADD COLUMN b TEXT;\nALTER TABLE t ADD COLUMN c TEXT;',
+    );
+
+    expect(() => runMigrations(db, migrationsDir)).not.toThrow();
+
+    expect(columnNames('t')).toEqual(['id', 'a', 'b', 'c']);
+    expect(appliedIds()).toEqual(['001_multi.sql']);
+  });
+
+  it('rolls back every statement of a multi-statement migration on a genuine error partway through', () => {
+    db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+    writeMigration(
+      '001_multi_bad.sql',
+      'ALTER TABLE t ADD COLUMN b TEXT;\nNOT VALID SQL;\nALTER TABLE t ADD COLUMN c TEXT;',
+    );
+
+    expect(() => runMigrations(db, migrationsDir)).toThrow();
+
+    expect(columnNames('t')).toEqual(['id']);
+    expect(appliedIds()).toEqual([]);
+  });
+
   it('rolls back and rethrows on a genuine migration error, without marking it applied', () => {
     writeMigration('001_bad.sql', 'NOT VALID SQL;');
 

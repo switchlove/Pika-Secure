@@ -70,10 +70,22 @@ async function sweepOnce(client) {
 }
 
 function start(client) {
-  sweepOnce(client).catch((err) => logger.error('Initial sweep failed:', err.message));
-  setInterval(() => {
-    sweepOnce(client).catch((err) => logger.error('Sweep failed:', err.message));
-  }, SWEEP_INTERVAL_MS);
+  // Guards against a sweep that takes longer than SWEEP_INTERVAL_MS (e.g. a large flagged
+  // backlog) still being in flight when the next tick fires — without this, the overlapping run
+  // could re-process the same expired record before the first sweep's markKicked commits.
+  let sweeping = false;
+  const runSweep = (onError) => {
+    if (sweeping) return;
+    sweeping = true;
+    sweepOnce(client)
+      .catch((err) => logger.error(onError, err.message))
+      .finally(() => {
+        sweeping = false;
+      });
+  };
+
+  runSweep('Initial sweep failed:');
+  setInterval(() => runSweep('Sweep failed:'), SWEEP_INTERVAL_MS);
 }
 
 module.exports = { start };

@@ -268,6 +268,31 @@ describe('sweeper.start', () => {
     expect(logger.error).toHaveBeenCalledWith('Initial sweep failed:', 'db exploded');
   });
 
+  it('does not start a new sweep while the previous one is still in flight', async () => {
+    const record = { id: 1, guild_id: 'guild-1', user_id: 'user-1' };
+    pendingVerifications.findExpired.mockReturnValue([record]);
+    let resolveFetch;
+    const client = makeClient(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pendingVerifications.findExpired).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pendingVerifications.findExpired).toHaveBeenCalledTimes(1);
+
+    resolveFetch(makeGuild(makeMember()));
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pendingVerifications.findExpired).toHaveBeenCalledTimes(2);
+  });
+
   it('logs an error when a later interval sweep rejects', async () => {
     let callCount = 0;
     pendingVerifications.findExpired.mockImplementation(() => {
