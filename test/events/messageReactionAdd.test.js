@@ -17,6 +17,9 @@ beforeEach(() => {
   honeypot = injectFakeModule(require, '../../src/verification/honeypot.js', {
     STAFF_EXEMPT_PERMISSIONS: ['flag-a', 'flag-b'],
     triggerHoneypot: vi.fn(),
+    isHoneypotChannel: (guildConfig, channelId) =>
+      Boolean(guildConfig.honeypot_channel_id) && channelId === guildConfig.honeypot_channel_id,
+    isStaffExempt: (member) => ['flag-a', 'flag-b'].some((flag) => member.permissions.has(flag)),
   });
   logger = injectFakeModule(require, '../../src/utils/logger.js', {
     warn: vi.fn(),

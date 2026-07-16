@@ -54,6 +54,36 @@ describe('STAFF_EXEMPT_PERMISSIONS', () => {
   });
 });
 
+describe('isHoneypotChannel', () => {
+  it('returns false when no honeypot channel is configured', () => {
+    expect(honeypot.isHoneypotChannel({}, 'chan-1')).toBe(false);
+  });
+
+  it('returns false when the channel does not match', () => {
+    expect(honeypot.isHoneypotChannel({ honeypot_channel_id: 'chan-1' }, 'chan-2')).toBe(false);
+  });
+
+  it('returns true when the channel matches the configured honeypot channel', () => {
+    expect(honeypot.isHoneypotChannel({ honeypot_channel_id: 'chan-1' }, 'chan-1')).toBe(true);
+  });
+});
+
+describe('isStaffExempt', () => {
+  it('returns false when the member has none of the exempt permissions', () => {
+    const member = { permissions: { has: vi.fn().mockReturnValue(false) } };
+    expect(honeypot.isStaffExempt(member)).toBe(false);
+  });
+
+  it('returns true when the member has at least one exempt permission', () => {
+    const member = {
+      permissions: {
+        has: vi.fn((flag) => flag === PermissionFlagsBits.BanMembers),
+      },
+    };
+    expect(honeypot.isStaffExempt(member)).toBe(true);
+  });
+});
+
 describe('triggerHoneypot', () => {
   it('bans the member, logs the audit event, and notifies modlog on success', async () => {
     const member = makeMember();

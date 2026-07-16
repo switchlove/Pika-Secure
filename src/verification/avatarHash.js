@@ -6,6 +6,10 @@ const HASH_WIDTH = 9;
 const HASH_HEIGHT = 8;
 const HASH_BITS = (HASH_WIDTH - 1) * HASH_HEIGHT;
 const FETCH_TIMEOUT_MS = 2000;
+// The caller always requests a 64x64 PNG, so this leaves generous headroom while still bounding
+// worst-case memory use per join if that assumption ever changes (a different CDN, a proxy that
+// doesn't enforce Discord's own size limits) instead of decoding an arbitrarily large image.
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 
 /**
  * Computes a 64-bit difference hash (dHash) of the image at avatarURL,
@@ -17,7 +21,16 @@ async function computeAvatarHash(avatarURL) {
   const response = await fetch(avatarURL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`Failed to fetch avatar image: HTTP ${response.status}`);
 
+  const contentLength = Number(response.headers?.get?.('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > MAX_AVATAR_BYTES) {
+    throw new Error(`Avatar image too large: ${contentLength} bytes (max ${MAX_AVATAR_BYTES})`);
+  }
+
   const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > MAX_AVATAR_BYTES) {
+    throw new Error(`Avatar image too large: ${buffer.length} bytes (max ${MAX_AVATAR_BYTES})`);
+  }
+
   const image = await loadImage(buffer);
 
   const canvas = createCanvas(HASH_WIDTH, HASH_HEIGHT);

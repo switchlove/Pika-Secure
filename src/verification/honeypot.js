@@ -24,4 +24,19 @@ async function triggerHoneypot(member, guildConfig, client, meta) {
   }
 }
 
-module.exports = { STAFF_EXEMPT_PERMISSIONS, triggerHoneypot };
+// Shared by the messageCreate and messageReactionAdd handlers, which both gate honeypot
+// triggers on the same two checks.
+function isHoneypotChannel(guildConfig, channelId) {
+  return Boolean(guildConfig.honeypot_channel_id) && channelId === guildConfig.honeypot_channel_id;
+}
+
+function isStaffExempt(member) {
+  return STAFF_EXEMPT_PERMISSIONS.some((flag) => member.permissions.has(flag));
+}
+
+module.exports = {
+  STAFF_EXEMPT_PERMISSIONS,
+  triggerHoneypot,
+  isHoneypotChannel,
+  isStaffExempt,
+};

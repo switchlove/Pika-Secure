@@ -3,6 +3,7 @@ const path = require('node:path');
 const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
 const { token } = require('./config/env');
 const logger = require('./utils/logger');
+const { createShutdownHandler } = require('./utils/shutdown');
 
 const client = new Client({
   intents: [
@@ -40,14 +41,11 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-let shuttingDown = false;
-function shutdown(signal) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  logger.info(`Received ${signal}, shutting down.`);
-  client.destroy();
-  process.exit(0);
-}
+const shutdown = createShutdownHandler({
+  destroy: () => client.destroy(),
+  exit: process.exit,
+  logger,
+});
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));

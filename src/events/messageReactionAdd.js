@@ -1,5 +1,5 @@
 const { getGuildConfig } = require('../database/guildConfig');
-const { STAFF_EXEMPT_PERMISSIONS, triggerHoneypot } = require('../verification/honeypot');
+const { triggerHoneypot, isHoneypotChannel, isStaffExempt } = require('../verification/honeypot');
 const logger = require('../utils/logger');
 
 module.exports = {
@@ -20,12 +20,11 @@ module.exports = {
     if (!message.guildId) return;
 
     const guildConfig = getGuildConfig(message.guildId);
-    if (!guildConfig.honeypot_channel_id || message.channelId !== guildConfig.honeypot_channel_id)
-      return;
+    if (!isHoneypotChannel(guildConfig, message.channelId)) return;
 
     const member = await message.guild.members.fetch(user.id).catch(() => null);
     if (!member) return;
-    if (STAFF_EXEMPT_PERMISSIONS.some((p) => member.permissions.has(p))) return;
+    if (isStaffExempt(member)) return;
 
     await triggerHoneypot(member, guildConfig, message.client, {
       channelId: message.channelId,

@@ -3,6 +3,7 @@ const path = require('node:path');
 const { REST, Routes } = require('discord.js');
 const { token, clientId, devGuildId } = require('./config/env');
 const logger = require('./utils/logger');
+const { resolveDeployRoute } = require('./utils/deployRoute');
 
 const commandsPath = path.join(__dirname, 'commands');
 const commands = fs
@@ -12,13 +13,15 @@ const commands = fs
 
 const rest = new REST().setToken(token);
 const forceGlobal = process.argv.includes('--global');
-const useGuildScope = devGuildId && !forceGlobal;
 
 (async () => {
   try {
-    const route = useGuildScope
-      ? Routes.applicationGuildCommands(clientId, devGuildId)
-      : Routes.applicationCommands(clientId);
+    const { route, useGuildScope } = resolveDeployRoute({
+      Routes,
+      clientId,
+      devGuildId,
+      forceGlobal,
+    });
 
     const result = await rest.put(route, { body: commands });
     logger.info(

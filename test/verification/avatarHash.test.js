@@ -31,12 +31,16 @@ function checkeredImage() {
   });
 }
 
-function stubFetch(buffer, { ok = true, status = 200 } = {}) {
+function stubFetch(buffer, { ok = true, status = 200, contentLength } = {}) {
   vi.stubGlobal(
     'fetch',
     vi.fn().mockResolvedValue({
       ok,
       status,
+      headers:
+        contentLength === undefined
+          ? undefined
+          : new Map([['content-length', String(contentLength)]]),
       arrayBuffer: async () =>
         buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
     }),
@@ -67,6 +71,28 @@ describe('computeAvatarHash', () => {
   it('throws when the fetch response is not ok', async () => {
     stubFetch(solidImage('#ffffff'), { ok: false, status: 404 });
     await expect(computeAvatarHash('https://cdn.example/missing.png')).rejects.toThrow(/404/);
+  });
+
+  it('throws when the Content-Length header exceeds the size cap, without buffering the body', async () => {
+    const arrayBuffer = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Map([['content-length', String(6 * 1024 * 1024)]]),
+        arrayBuffer,
+      }),
+    );
+
+    await expect(computeAvatarHash('https://cdn.example/huge.png')).rejects.toThrow(/too large/);
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('throws when the downloaded body exceeds the size cap even without a Content-Length header', async () => {
+    const oversized = Buffer.alloc(6 * 1024 * 1024);
+    stubFetch(oversized);
+    await expect(computeAvatarHash('https://cdn.example/huge.png')).rejects.toThrow(/too large/);
   });
 });
 

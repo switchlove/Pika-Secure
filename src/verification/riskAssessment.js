@@ -33,6 +33,52 @@ const TRUSTED_BADGE_FLAGS = [
   'PremiumEarlySupporter',
 ];
 
+// Flat add-if-applicable risk factors, evaluated in this order after the account-age check (which
+// is a variable-points formula, not a flat add) and before the trusted-badge discount (which
+// subtracts rather than adds) — those two stay hand-written below since they don't fit this shape.
+const FLAT_RISK_FACTORS = [
+  {
+    points: NO_AVATAR_POINTS,
+    applies: (member) => !member.user.avatar,
+    reason: () => `No custom avatar — +${NO_AVATAR_POINTS}`,
+  },
+  {
+    points: JOIN_BURST_POINTS,
+    applies: (member, guildConfig, ctx) => ctx.burstCount > guildConfig.join_burst_count_threshold,
+    reason: (member, guildConfig, ctx) =>
+      `Part of a join burst (${ctx.burstCount} joins within ${guildConfig.join_burst_window_seconds}s) — +${JOIN_BURST_POINTS}`,
+  },
+  {
+    points: DUPLICATE_AVATAR_POINTS,
+    applies: (member, guildConfig, ctx) =>
+      Boolean(member.user.avatar) &&
+      ctx.avatarReuseCount > guildConfig.avatar_reuse_count_threshold,
+    reason: (member, guildConfig, ctx) =>
+      `Avatar reused by ${ctx.avatarReuseCount} recent joins within ${guildConfig.avatar_reuse_window_seconds}s — +${DUPLICATE_AVATAR_POINTS}`,
+  },
+  {
+    points: PERCEPTUAL_AVATAR_MATCH_POINTS,
+    applies: (member, guildConfig, ctx) =>
+      Boolean(member.user.avatar) &&
+      ctx.perceptualAvatarMatchCount > guildConfig.avatar_reuse_count_threshold,
+    reason: (member, guildConfig, ctx) =>
+      `Avatar closely resembles ${ctx.perceptualAvatarMatchCount} recent joins within ${guildConfig.avatar_reuse_window_seconds}s — +${PERCEPTUAL_AVATAR_MATCH_POINTS}`,
+  },
+  {
+    points: SUSPICIOUS_USERNAME_POINTS,
+    applies: (member) => SUSPICIOUS_USERNAME_PATTERN.test(member.user.username),
+    reason: () =>
+      `Username matches a common bot-generated pattern — +${SUSPICIOUS_USERNAME_POINTS}`,
+  },
+  {
+    points: SIMILAR_USERNAME_CLUSTER_POINTS,
+    applies: (member, guildConfig, ctx) =>
+      ctx.similarUsernameCount > guildConfig.username_similarity_count_threshold,
+    reason: (member, guildConfig, ctx) =>
+      `Username is similar to ${ctx.similarUsernameCount} recent joins within ${guildConfig.username_similarity_window_seconds}s — +${SIMILAR_USERNAME_CLUSTER_POINTS}`,
+  },
+];
+
 function computeRiskScore(
   member,
   guildConfig,
@@ -43,6 +89,7 @@ function computeRiskScore(
 ) {
   const reasons = [];
   let score = 0;
+  const ctx = { burstCount, avatarReuseCount, perceptualAvatarMatchCount, similarUsernameCount };
 
   const accountAgeDays = (Date.now() - member.user.createdTimestamp) / DAY_MS;
   const minAccountAgeDays = guildConfig.min_account_age_days;
@@ -56,44 +103,11 @@ function computeRiskScore(
     );
   }
 
-  if (!member.user.avatar) {
-    score += NO_AVATAR_POINTS;
-    reasons.push(`No custom avatar — +${NO_AVATAR_POINTS}`);
-  }
-
-  if (burstCount > guildConfig.join_burst_count_threshold) {
-    score += JOIN_BURST_POINTS;
-    reasons.push(
-      `Part of a join burst (${burstCount} joins within ${guildConfig.join_burst_window_seconds}s) — +${JOIN_BURST_POINTS}`,
-    );
-  }
-
-  if (member.user.avatar && avatarReuseCount > guildConfig.avatar_reuse_count_threshold) {
-    score += DUPLICATE_AVATAR_POINTS;
-    reasons.push(
-      `Avatar reused by ${avatarReuseCount} recent joins within ${guildConfig.avatar_reuse_window_seconds}s — +${DUPLICATE_AVATAR_POINTS}`,
-    );
-  }
-
-  if (member.user.avatar && perceptualAvatarMatchCount > guildConfig.avatar_reuse_count_threshold) {
-    score += PERCEPTUAL_AVATAR_MATCH_POINTS;
-    reasons.push(
-      `Avatar closely resembles ${perceptualAvatarMatchCount} recent joins within ${guildConfig.avatar_reuse_window_seconds}s — +${PERCEPTUAL_AVATAR_MATCH_POINTS}`,
-    );
-  }
-
-  if (SUSPICIOUS_USERNAME_PATTERN.test(member.user.username)) {
-    score += SUSPICIOUS_USERNAME_POINTS;
-    reasons.push(
-      `Username matches a common bot-generated pattern — +${SUSPICIOUS_USERNAME_POINTS}`,
-    );
-  }
-
-  if (similarUsernameCount > guildConfig.username_similarity_count_threshold) {
-    score += SIMILAR_USERNAME_CLUSTER_POINTS;
-    reasons.push(
-      `Username is similar to ${similarUsernameCount} recent joins within ${guildConfig.username_similarity_window_seconds}s — +${SIMILAR_USERNAME_CLUSTER_POINTS}`,
-    );
+  for (const factor of FLAT_RISK_FACTORS) {
+    if (factor.applies(member, guildConfig, ctx)) {
+      score += factor.points;
+      reasons.push(factor.reason(member, guildConfig, ctx));
+    }
   }
 
   const badges = member.user.flags?.toArray() ?? [];
