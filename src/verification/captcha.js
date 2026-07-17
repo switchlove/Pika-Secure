@@ -1,4 +1,5 @@
 const path = require('path');
+const { randomInt } = require('node:crypto');
 const { createCanvas, GlobalFonts } = require('@napi-rs/canvas');
 const { generateMathCaptcha } = require('./mathCaptcha');
 
@@ -22,8 +23,12 @@ const DIFFICULTY_TIERS = {
 };
 const DEFAULT_DIFFICULTY = 'normal';
 
+// The captcha answer is the bot's actual anti-automation secret, so it's drawn from a CSPRNG
+// rather than Math.random() (whose internal state has published recovery attacks given enough
+// sampled outputs). The visual jitter/noise below (randomInRange) isn't a secret, so it's left on
+// Math.random().
 function randomChar() {
-  return CHARSET[Math.floor(Math.random() * CHARSET.length)];
+  return CHARSET[randomInt(CHARSET.length)];
 }
 
 function randomInRange(min, max) {

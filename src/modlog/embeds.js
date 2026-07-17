@@ -65,11 +65,20 @@ function autoKickedEmbed(guildId, userId) {
     );
 }
 
-function honeypotTriggeredEmbed(member, trigger = 'message') {
+function honeypotTriggeredEmbed(member, trigger = 'message', banFailed = false) {
   const action =
     trigger === 'reaction'
       ? 'reacted to the bait message in the honeypot channel'
       : 'posted in the honeypot channel';
+
+  if (banFailed) {
+    return baseEmbed(0xff0000)
+      .setTitle('⚠️ Honeypot triggered — ban FAILED, manual action needed')
+      .setDescription(
+        `${userField(member)} ${action}. The bot could not ban this member — check its **Ban Members** permission and role position, then ban manually.`,
+      );
+  }
+
   return baseEmbed(0xed4245)
     .setTitle('Honeypot triggered — banned')
     .setDescription(`${userField(member)} ${action} and was banned.`);

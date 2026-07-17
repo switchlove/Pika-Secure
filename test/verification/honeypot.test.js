@@ -98,21 +98,38 @@ describe('triggerHoneypot', () => {
       'guild-1',
       'user-1',
       'honeypot_triggered',
-      meta,
+      {
+        ...meta,
+        banFailed: false,
+        banError: null,
+      },
     );
-    expect(embeds.honeypotTriggeredEmbed).toHaveBeenCalledWith(member, 'message');
+    expect(embeds.honeypotTriggeredEmbed).toHaveBeenCalledWith(member, 'message', false);
     expect(modlog.send).toHaveBeenCalledWith(client, guildConfig, HONEYPOT_TRIGGERED_EMBED);
   });
 
-  it('swallows a rejected ban and logs a warning without throwing', async () => {
+  it('still alerts (audit log + modlog) and logs a warning when the ban fails', async () => {
     const member = makeMember({ banResolves: false });
+    const guildConfig = { mod_log_channel_id: 'chan-1' };
+    const client = {};
+    const meta = { channelId: 'honeypot-1', trigger: 'reaction' };
 
     await expect(
-      honeypot.triggerHoneypot(member, {}, {}, { channelId: 'honeypot-1', trigger: 'reaction' }),
+      honeypot.triggerHoneypot(member, guildConfig, client, meta),
     ).resolves.toBeUndefined();
 
     expect(logger.warn).toHaveBeenCalledTimes(1);
-    expect(auditLog.insertAuditLog).not.toHaveBeenCalled();
-    expect(modlog.send).not.toHaveBeenCalled();
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      'honeypot_triggered',
+      {
+        ...meta,
+        banFailed: true,
+        banError: 'missing perms',
+      },
+    );
+    expect(embeds.honeypotTriggeredEmbed).toHaveBeenCalledWith(member, 'reaction', true);
+    expect(modlog.send).toHaveBeenCalledWith(client, guildConfig, HONEYPOT_TRIGGERED_EMBED);
   });
 });

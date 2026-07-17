@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import crypto from 'node:crypto';
 import { generateMathCaptcha } from '../../src/verification/mathCaptcha.js';
 
 describe('generateMathCaptcha', () => {
@@ -34,10 +35,10 @@ describe('generateMathCaptcha', () => {
   });
 
   it('can use multiplication at the hard tier', () => {
-    vi.spyOn(Math, 'random')
-      .mockReturnValueOnce(0.99) // pick the last operation (*)
-      .mockReturnValueOnce(0.1)
-      .mockReturnValueOnce(0.1);
+    vi.spyOn(crypto, 'randomInt')
+      .mockReturnValueOnce(2) // pick the last operation (*)
+      .mockReturnValueOnce(5)
+      .mockReturnValueOnce(7);
     const { prompt, answer } = generateMathCaptcha('hard');
     expect(prompt).toContain(' * ');
     expect(answer).toBe(String(Number(answer)));

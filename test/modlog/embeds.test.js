@@ -176,6 +176,12 @@ describe('honeypotTriggeredEmbed', () => {
     const data = honeypotTriggeredEmbed(makeMember(), 'reaction').data;
     expect(data.description).toContain('reacted to the bait message');
   });
+
+  it('reports the ban failure and asks for manual action when banFailed is true', () => {
+    const data = honeypotTriggeredEmbed(makeMember(), 'message', true).data;
+    expect(data.title).toContain('ban FAILED');
+    expect(data.description).toContain('could not ban this member');
+  });
 });
 
 describe('raidLockdownEngagedEmbed', () => {
