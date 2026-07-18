@@ -64,8 +64,23 @@ single bot process can run across as many servers as it's invited to — see "Ru
 ## Running on multiple servers
 
 The bot's data model and event handling are already per-guild (roles, channels, thresholds, and pending
-verifications are all scoped to the guild they belong to), so a single running bot process works across any number
-of servers with no code changes. The only thing that differs is command deployment:
+verifications are all scoped to the guild they belong to), so a single bot process handles any number of servers
+with no code changes — up to the point where Discord itself requires sharding (roughly 2,500 guilds; the gateway
+will refuse to let an unsharded connection grow past that). `npm start` auto-detects this: it asks Discord for the
+recommended shard count at connect time and shards internally within the one process if needed, so nothing has to
+change until your bot actually approaches that threshold.
+
+Past that point, run `npm run start:sharded` instead. This uses discord.js's own `ShardingManager` to spawn multiple
+`src/index.js` processes on the same host — no Docker/PM2/orchestrator required, though it also works fine under
+one if you prefer. By default it asks Discord for the recommended shard count; set `SHARD_COUNT` to pin an explicit
+number instead.
+
+**Multi-process caveat**: all shard processes share one SQLite file (`DATABASE_PATH`). It defaults to a path
+resolved relative to the process's working directory, which is fine as long as every shard is launched from the
+same directory (true by default under `start:sharded`) — but for production, set `DATABASE_PATH` to an explicit
+absolute path so this can never depend on how the process happens to be launched.
+
+Command deployment is unaffected by sharding — it's a one-time REST call independent of the running bot process(es):
 
 - `npm run deploy-commands` — registers `/setup` guild-scoped to `DISCORD_GUILD_ID` (instant propagation), meant for
   fast iteration during development against one test server.

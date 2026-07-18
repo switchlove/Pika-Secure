@@ -70,6 +70,40 @@ describe('createPendingVerification', () => {
     expect(rejoined.deadline_at).toBe(2000);
     expect(rejoined.joined_at).toBe(1500);
   });
+
+  it('keeps state=flagged and preserves captcha progress on conflict, but still refreshes score/deadline', () => {
+    pendingVerifications.createPendingVerification({
+      guildId: 'g1',
+      userId: 'u1',
+      riskScore: 80,
+      riskReasons: ['risky'],
+      deadlineAt: 1000,
+      joinedAt: 500,
+    });
+    pendingVerifications.escalateToCaptcha('g1', 'u1', 'ABC123');
+    pendingVerifications.recordCaptchaFailure('g1', 'u1', null, true);
+    const flagged = pendingVerifications.getPendingVerification('g1', 'u1');
+    expect(flagged.state).toBe('flagged');
+    expect(flagged.captcha_answer).toBeNull();
+    expect(flagged.captcha_attempts).toBe(1);
+
+    const rejoined = pendingVerifications.createPendingVerification({
+      guildId: 'g1',
+      userId: 'u1',
+      riskScore: 30,
+      riskReasons: ['new join risk'],
+      deadlineAt: 5000,
+      joinedAt: 4500,
+    });
+
+    expect(rejoined.state).toBe('flagged');
+    expect(rejoined.captcha_answer).toBeNull();
+    expect(rejoined.captcha_attempts).toBe(1);
+    expect(rejoined.risk_score).toBe(30);
+    expect(JSON.parse(rejoined.risk_reasons)).toEqual(['new join risk']);
+    expect(rejoined.deadline_at).toBe(5000);
+    expect(rejoined.joined_at).toBe(4500);
+  });
 });
 
 describe('getPendingVerification', () => {

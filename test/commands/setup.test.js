@@ -72,6 +72,10 @@ beforeEach(() => {
     findFlagged: vi.fn().mockReturnValue([]),
   });
 
+  injectFakeModule(require, '../../src/database/raidSignalEvents.js', {
+    MAX_DETECTION_WINDOW_SECONDS: 82800,
+  });
+
   injectFakeModule(require, '../../src/modlog/embeds.js', {
     flaggedListEmbed: vi.fn().mockReturnValue(FLAGGED_LIST_EMBED),
     auditLogListEmbed: vi.fn().mockReturnValue(AUDIT_LOG_LIST_EMBED),
@@ -87,6 +91,9 @@ beforeEach(() => {
     buildHoneypotBaitPayload: vi.fn().mockReturnValue(BAIT_PAYLOAD),
     syncChannelPermissions: vi.fn().mockResolvedValue([]),
     syncHoneypotPermissions: vi.fn().mockResolvedValue([]),
+    revokeVerificationChannelPermissions: vi.fn().mockResolvedValue([]),
+    revokeHoneypotPermissions: vi.fn().mockResolvedValue([]),
+    refreshGateMessage: vi.fn().mockResolvedValue(false),
     HONEYPOT_BAIT_EMOJI: '🎉',
     DEFAULT_HONEYPOT_BAIT_MESSAGE: 'React with 🎉 below for a chance at a special role and prizes.',
   });
@@ -130,6 +137,20 @@ function makeInteraction({
 describe('data', () => {
   it('is named "setup"', () => {
     expect(setup.data.name).toBe('setup');
+  });
+
+  it('caps the four detection-window threshold options at MAX_DETECTION_WINDOW_SECONDS', () => {
+    const thresholds = setup.data.toJSON().options.find((opt) => opt.name === 'thresholds');
+    const windowOptionNames = [
+      'join_burst_window_seconds',
+      'avatar_reuse_window_seconds',
+      'username_similarity_window',
+      'fast_solve_window_seconds',
+    ];
+    for (const name of windowOptionNames) {
+      const option = thresholds.options.find((opt) => opt.name === name);
+      expect(option.max_value).toBe(82800);
+    }
   });
 });
 
@@ -245,6 +266,20 @@ describe('execute — admins group', () => {
       admin_roles_removed: 'role-a',
     });
   });
+
+  it('no-ops when removing a role that is not an admin role', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(baseConfig({ admin_role_ids: ['role-a'] }));
+    const interaction = makeInteraction({
+      subGroup: 'admins',
+      sub: 'remove',
+      roleOptions: { role: { id: 'role-not-admin' } },
+    });
+
+    await setup.execute(interaction);
+
+    expect(guildConfigMod.updateGuildConfig).not.toHaveBeenCalled();
+    expect(auditLog.insertAuditLog).not.toHaveBeenCalled();
+  });
 });
 
 describe('execute — roles', () => {
@@ -267,9 +302,28 @@ describe('execute — roles', () => {
       interaction.guild,
       expect.any(Object),
     );
+    expect(quarantine.syncHoneypotPermissions).toHaveBeenCalledWith(
+      interaction.guild,
+      expect.any(Object),
+    );
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({ content: undefined, embeds: expect.any(Array) }),
     );
+  });
+
+  it('merges failures from both channel and honeypot permission syncs', async () => {
+    quarantine.syncChannelPermissions.mockResolvedValue(['verification channel (<#x>): no access']);
+    quarantine.syncHoneypotPermissions.mockResolvedValue(['honeypot channel (<#y>): no access']);
+    const interaction = makeInteraction({
+      sub: 'roles',
+      roleOptions: { unverified: { id: 'role-u' } },
+    });
+
+    await setup.execute(interaction);
+
+    const content = interaction.reply.mock.calls[0][0].content;
+    expect(content).toContain('verification channel (<#x>): no access');
+    expect(content).toContain('honeypot channel (<#y>): no access');
   });
 
   it('passes verified_role_id as undefined when the optional role is omitted', async () => {
@@ -302,7 +356,22 @@ describe('execute — roles', () => {
 });
 
 describe('execute — channels', () => {
-  it('sets channels, syncs permissions, and posts the gate message', async () => {
+  it('rejects when verification and mod-log are set to the same channel', async () => {
+    const interaction = makeInteraction({
+      sub: 'channels',
+      channelOptions: { verification: { id: 'chan-same' }, modlog: { id: 'chan-same' } },
+    });
+
+    await setup.execute(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('must be different') }),
+    );
+    expect(guildConfigMod.updateGuildConfig).not.toHaveBeenCalled();
+    expect(quarantine.syncChannelPermissions).not.toHaveBeenCalled();
+  });
+
+  it('sets channels, syncs permissions, and posts the gate message when the channel changed', async () => {
     const updatedConfig = baseConfig({
       verification_channel_id: 'chan-v',
       mod_log_channel_id: 'chan-m',
@@ -321,6 +390,7 @@ describe('execute — channels', () => {
       verification_channel_id: 'chan-v',
       mod_log_channel_id: 'chan-m',
     });
+    expect(quarantine.refreshGateMessage).not.toHaveBeenCalled();
     expect(verificationChannel.send).toHaveBeenCalledWith(GATE_PAYLOAD);
     expect(guildConfigMod.updateGuildConfig).toHaveBeenNthCalledWith(2, 'guild-1', {
       gate_message_id: 'gate-msg-1',
@@ -345,6 +415,207 @@ describe('execute — channels', () => {
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({ embeds: expect.any(Array) }),
     );
+  });
+
+  it('edits the existing gate message in place instead of posting a new one when the verification channel is unchanged', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-v', gate_message_id: 'gate-old' }),
+    );
+    guildConfigMod.updateGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-v', mod_log_channel_id: 'chan-m' }),
+    );
+    quarantine.refreshGateMessage.mockResolvedValue(true);
+    const verificationChannel = { id: 'chan-v', send: vi.fn() };
+    const interaction = makeInteraction({
+      sub: 'channels',
+      channelOptions: { verification: verificationChannel, modlog: { id: 'chan-m' } },
+    });
+
+    await setup.execute(interaction);
+
+    expect(quarantine.refreshGateMessage).toHaveBeenCalledWith(
+      interaction.guild,
+      expect.any(Object),
+    );
+    expect(verificationChannel.send).not.toHaveBeenCalled();
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes the old gate message and posts a new one when the verification channel changes', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-old', gate_message_id: 'gate-old' }),
+    );
+    guildConfigMod.updateGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-v', mod_log_channel_id: 'chan-m' }),
+    );
+    const oldMessage = { delete: vi.fn().mockResolvedValue(undefined) };
+    const oldChannel = { messages: { fetch: vi.fn().mockResolvedValue(oldMessage) } };
+    const verificationChannel = {
+      id: 'chan-v',
+      send: vi.fn().mockResolvedValue({ id: 'gate-new' }),
+    };
+    const interaction = makeInteraction({
+      sub: 'channels',
+      channelOptions: { verification: verificationChannel, modlog: { id: 'chan-m' } },
+    });
+    interaction.guild.channels.fetch.mockResolvedValue(oldChannel);
+
+    await setup.execute(interaction);
+
+    expect(interaction.guild.channels.fetch).toHaveBeenCalledWith('chan-old');
+    expect(oldChannel.messages.fetch).toHaveBeenCalledWith('gate-old');
+    expect(oldMessage.delete).toHaveBeenCalled();
+    expect(quarantine.refreshGateMessage).not.toHaveBeenCalled();
+    expect(verificationChannel.send).toHaveBeenCalledWith(GATE_PAYLOAD);
+  });
+
+  it('logs and still posts a new gate message when deleting the old one fails', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-old', gate_message_id: 'gate-old' }),
+    );
+    const verificationChannel = {
+      id: 'chan-v',
+      send: vi.fn().mockResolvedValue({ id: 'gate-new' }),
+    };
+    const interaction = makeInteraction({
+      sub: 'channels',
+      channelOptions: { verification: verificationChannel, modlog: { id: 'chan-m' } },
+    });
+    interaction.guild.channels.fetch.mockRejectedValue(new Error('old channel gone'));
+
+    await setup.execute(interaction);
+
+    expect(logger.warn).toHaveBeenCalled();
+    expect(verificationChannel.send).toHaveBeenCalledWith(GATE_PAYLOAD);
+  });
+
+  it('falls back to posting a new gate message when refreshGateMessage reports failure', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-v', gate_message_id: 'gate-old' }),
+    );
+    quarantine.refreshGateMessage.mockResolvedValue(false);
+    const verificationChannel = {
+      id: 'chan-v',
+      send: vi.fn().mockResolvedValue({ id: 'gate-new' }),
+    };
+    const interaction = makeInteraction({
+      sub: 'channels',
+      channelOptions: { verification: verificationChannel, modlog: { id: 'chan-m' } },
+    });
+
+    await setup.execute(interaction);
+
+    expect(quarantine.refreshGateMessage).toHaveBeenCalled();
+    expect(interaction.guild.channels.fetch).not.toHaveBeenCalled();
+    expect(verificationChannel.send).toHaveBeenCalledWith(GATE_PAYLOAD);
+  });
+
+  it('revokes the old verification channel permissions when the channel changes', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-old', unverified_role_id: 'role-u' }),
+    );
+    guildConfigMod.updateGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-v', unverified_role_id: 'role-u' }),
+    );
+    const verificationChannel = {
+      id: 'chan-v',
+      send: vi.fn().mockResolvedValue({ id: 'gate-new' }),
+    };
+    const interaction = makeInteraction({
+      sub: 'channels',
+      channelOptions: { verification: verificationChannel, modlog: { id: 'chan-m' } },
+    });
+
+    await setup.execute(interaction);
+
+    expect(quarantine.revokeVerificationChannelPermissions).toHaveBeenCalledWith(
+      interaction.guild,
+      'chan-old',
+      'role-u',
+    );
+  });
+
+  it('does not revoke old verification channel permissions when the channel is unchanged', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-v', unverified_role_id: 'role-u' }),
+    );
+    const verificationChannel = { id: 'chan-v', send: vi.fn() };
+    const interaction = makeInteraction({
+      sub: 'channels',
+      channelOptions: { verification: verificationChannel, modlog: { id: 'chan-m' } },
+    });
+
+    await setup.execute(interaction);
+
+    expect(quarantine.revokeVerificationChannelPermissions).not.toHaveBeenCalled();
+  });
+
+  it('surfaces verification-channel revoke failures in the permission warning', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ verification_channel_id: 'chan-old' }),
+    );
+    quarantine.revokeVerificationChannelPermissions.mockResolvedValue([
+      'old verification channel (<#chan-old>): missing perms',
+    ]);
+    const verificationChannel = {
+      id: 'chan-v',
+      send: vi.fn().mockResolvedValue({ id: 'gate-new' }),
+    };
+    const interaction = makeInteraction({
+      sub: 'channels',
+      channelOptions: { verification: verificationChannel, modlog: { id: 'chan-m' } },
+    });
+
+    await setup.execute(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('old verification channel (<#chan-old>): missing perms'),
+      }),
+    );
+  });
+});
+
+describe('execute — welcome', () => {
+  it('sets the welcome channel and custom message', async () => {
+    guildConfigMod.updateGuildConfig.mockReturnValue(
+      baseConfig({ welcome_channel_id: 'chan-w', welcome_message: 'Hi {user}!' }),
+    );
+    const interaction = makeInteraction({
+      sub: 'welcome',
+      channelOptions: { channel: { id: 'chan-w' } },
+      stringOptions: { message: 'Hi {user}!' },
+    });
+
+    await setup.execute(interaction);
+
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledWith('guild-1', {
+      welcome_channel_id: 'chan-w',
+      welcome_message: 'Hi {user}!',
+    });
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'admin-user', 'setup_changed', {
+      welcome: { channel: 'chan-w', message: 'Hi {user}!' },
+    });
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ embeds: expect.any(Array) }),
+    );
+  });
+
+  it('passes welcome_message as undefined when the optional message is omitted', async () => {
+    const interaction = makeInteraction({
+      sub: 'welcome',
+      channelOptions: { channel: { id: 'chan-w' } },
+    });
+
+    await setup.execute(interaction);
+
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledWith('guild-1', {
+      welcome_channel_id: 'chan-w',
+      welcome_message: undefined,
+    });
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'admin-user', 'setup_changed', {
+      welcome: { channel: 'chan-w', message: undefined },
+    });
   });
 });
 
@@ -418,14 +689,13 @@ describe('execute — honeypot', () => {
     );
   });
 
-  it('skips refreshing the gate message when no gate message exists yet', async () => {
-    guildConfigMod.updateGuildConfig.mockReturnValue(
-      baseConfig({
-        honeypot_channel_id: 'chan-h',
-        verification_channel_id: null,
-        gate_message_id: null,
-      }),
-    );
+  it('refreshes the gate message via refreshGateMessage after posting the bait message', async () => {
+    const updated = baseConfig({
+      honeypot_channel_id: 'chan-h',
+      verification_channel_id: 'chan-v',
+      gate_message_id: 'gate-1',
+    });
+    guildConfigMod.updateGuildConfig.mockReturnValue(updated);
     const honeypotChannel = {
       id: 'chan-h',
       send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }),
@@ -437,44 +707,38 @@ describe('execute — honeypot', () => {
 
     await setup.execute(interaction);
 
-    expect(interaction.guild.channels.fetch).not.toHaveBeenCalled();
+    expect(quarantine.refreshGateMessage).toHaveBeenCalledWith(interaction.guild, updated);
   });
 
-  it('refreshes an existing gate message when both channel and message id are set', async () => {
-    guildConfigMod.updateGuildConfig.mockReturnValue(
-      baseConfig({
-        honeypot_channel_id: 'chan-h',
-        verification_channel_id: 'chan-v',
-        gate_message_id: 'gate-1',
-      }),
+  it('revokes the old honeypot channel permissions when the channel changes', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({ honeypot_channel_id: 'chan-old', unverified_role_id: 'role-u' }),
     );
+    guildConfigMod.updateGuildConfig.mockReturnValue(
+      baseConfig({ honeypot_channel_id: 'chan-h', unverified_role_id: 'role-u' }),
+    );
+    quarantine.revokeHoneypotPermissions.mockResolvedValue([]);
     const honeypotChannel = {
       id: 'chan-h',
       send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }),
     };
-    const gateMessage = { edit: vi.fn().mockResolvedValue(undefined) };
-    const verificationChannel = { messages: { fetch: vi.fn().mockResolvedValue(gateMessage) } };
     const interaction = makeInteraction({
       sub: 'honeypot',
       channelOptions: { channel: honeypotChannel },
     });
-    interaction.guild.channels.fetch.mockResolvedValue(verificationChannel);
 
     await setup.execute(interaction);
 
-    expect(interaction.guild.channels.fetch).toHaveBeenCalledWith('chan-v');
-    expect(verificationChannel.messages.fetch).toHaveBeenCalledWith('gate-1');
-    expect(gateMessage.edit).toHaveBeenCalledWith(GATE_PAYLOAD);
+    expect(quarantine.revokeHoneypotPermissions).toHaveBeenCalledWith(
+      interaction.guild,
+      'chan-old',
+      'role-u',
+    );
   });
 
-  it('logs and continues when refreshing the gate message fails', async () => {
-    guildConfigMod.updateGuildConfig.mockReturnValue(
-      baseConfig({
-        honeypot_channel_id: 'chan-h',
-        verification_channel_id: 'chan-v',
-        gate_message_id: 'gate-1',
-      }),
-    );
+  it('does not revoke old honeypot permissions when the channel is unchanged', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(baseConfig({ honeypot_channel_id: 'chan-h' }));
+    guildConfigMod.updateGuildConfig.mockReturnValue(baseConfig({ honeypot_channel_id: 'chan-h' }));
     const honeypotChannel = {
       id: 'chan-h',
       send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }),
@@ -483,12 +747,32 @@ describe('execute — honeypot', () => {
       sub: 'honeypot',
       channelOptions: { channel: honeypotChannel },
     });
-    interaction.guild.channels.fetch.mockRejectedValue(new Error('channel gone'));
 
-    await expect(setup.execute(interaction)).resolves.toBeUndefined();
-    expect(logger.error).toHaveBeenCalled();
+    await setup.execute(interaction);
+
+    expect(quarantine.revokeHoneypotPermissions).not.toHaveBeenCalled();
+  });
+
+  it('surfaces revoke failures in the permission warning alongside sync failures', async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(baseConfig({ honeypot_channel_id: 'chan-old' }));
+    quarantine.revokeHoneypotPermissions.mockResolvedValue([
+      'old honeypot channel (<#chan-old>): missing perms',
+    ]);
+    const honeypotChannel = {
+      id: 'chan-h',
+      send: vi.fn().mockResolvedValue({ id: 'm', react: vi.fn().mockResolvedValue() }),
+    };
+    const interaction = makeInteraction({
+      sub: 'honeypot',
+      channelOptions: { channel: honeypotChannel },
+    });
+
+    await setup.execute(interaction);
+
     expect(interaction.reply).toHaveBeenCalledWith(
-      expect.objectContaining({ embeds: expect.any(Array) }),
+      expect.objectContaining({
+        content: expect.stringContaining('old honeypot channel (<#chan-old>): missing perms'),
+      }),
     );
   });
 });
@@ -583,6 +867,34 @@ describe('execute — thresholds', () => {
       },
     });
   });
+
+  it('translates an explicit 0 for raid_lockdown_join_count into null (the disable sentinel)', async () => {
+    const interaction = makeInteraction({
+      sub: 'thresholds',
+      integerOptions: { raid_lockdown_join_count: 0 },
+    });
+
+    await setup.execute(interaction);
+
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledWith(
+      'guild-1',
+      expect.objectContaining({ raid_lockdown_join_count_threshold: null }),
+    );
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'admin-user', 'setup_changed', {
+      thresholds: { raid_lockdown_join_count_threshold: null },
+    });
+  });
+
+  it('leaves raid_lockdown_join_count_threshold unchanged (undefined) when the option is omitted', async () => {
+    const interaction = makeInteraction({ sub: 'thresholds' });
+
+    await setup.execute(interaction);
+
+    expect(guildConfigMod.updateGuildConfig).toHaveBeenCalledWith(
+      'guild-1',
+      expect.objectContaining({ raid_lockdown_join_count_threshold: undefined }),
+    );
+  });
 });
 
 describe('execute — view', () => {
@@ -595,6 +907,23 @@ describe('execute — view', () => {
       expect.objectContaining({ embeds: expect.any(Array) }),
     );
     expect(guildConfigMod.getGuildConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it("truncates an overlong welcome/honeypot message to Discord's 1024-char embed field limit", async () => {
+    guildConfigMod.getGuildConfig.mockReturnValue(
+      baseConfig({
+        welcome_message: 'w'.repeat(1500),
+        honeypot_bait_message: 'h'.repeat(1500),
+      }),
+    );
+    const interaction = makeInteraction({ sub: 'view' });
+
+    await setup.execute(interaction);
+
+    const embed = interaction.reply.mock.calls[0][0].embeds[0];
+    const fields = embed.data.fields;
+    expect(fields.find((f) => f.name === 'Welcome message').value).toHaveLength(1024);
+    expect(fields.find((f) => f.name === 'Honeypot bait message').value).toHaveLength(1024);
   });
 
   it('renders configured channels as mentions rather than "Not set"', async () => {

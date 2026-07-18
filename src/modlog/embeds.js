@@ -18,6 +18,18 @@ function joinedEmbed(member, score, reasons) {
     );
 }
 
+function rejoinWhileFlaggedEmbed(member, score, reasons) {
+  return baseEmbed(0xed4245)
+    .setTitle('⚠️ Flagged member rejoined — still requires manual review')
+    .setDescription(
+      `${userField(member)} left and rejoined while flagged for manual review. Their flagged state was **not** reset — they still cannot self-verify.`,
+    )
+    .addFields(
+      { name: 'Current risk score', value: `${score}/100` },
+      { name: 'Reasons', value: reasons.map((r) => `• ${r}`).join('\n') },
+    );
+}
+
 function verifiedEmbed(member, viaCaptcha, latencyMs = null, fastSolve = false) {
   const embed = baseEmbed(0x57f287)
     .setTitle('Verification succeeded')
@@ -157,6 +169,7 @@ function unconfiguredEmbed(member) {
 
 module.exports = {
   joinedEmbed,
+  rejoinWhileFlaggedEmbed,
   verifiedEmbed,
   captchaEscalatedEmbed,
   captchaFailedEmbed,

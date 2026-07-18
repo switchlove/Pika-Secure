@@ -9,6 +9,9 @@ let assignUnverifiedRole;
 let applyVerifiedRoles;
 let syncChannelPermissions;
 let syncHoneypotPermissions;
+let revokeVerificationChannelPermissions;
+let revokeHoneypotPermissions;
+let refreshGateMessage;
 let buildGateMessagePayload;
 let buildHoneypotBaitPayload;
 let HONEYPOT_BAIT_EMOJI;
@@ -25,6 +28,9 @@ beforeEach(() => {
     applyVerifiedRoles,
     syncChannelPermissions,
     syncHoneypotPermissions,
+    revokeVerificationChannelPermissions,
+    revokeHoneypotPermissions,
+    refreshGateMessage,
     buildGateMessagePayload,
     buildHoneypotBaitPayload,
     HONEYPOT_BAIT_EMOJI,
@@ -254,6 +260,40 @@ describe('syncChannelPermissions', () => {
   });
 });
 
+describe('revokeVerificationChannelPermissions', () => {
+  it('returns [] immediately when no channel id is given', async () => {
+    const guild = makeGuild();
+    const failures = await revokeVerificationChannelPermissions(guild, null, 'role-u');
+    expect(failures).toEqual([]);
+    expect(guild.channels.fetch).not.toHaveBeenCalled();
+  });
+
+  it('returns [] immediately when no unverified role id is given', async () => {
+    const guild = makeGuild();
+    const failures = await revokeVerificationChannelPermissions(guild, 'chan-old', null);
+    expect(failures).toEqual([]);
+    expect(guild.channels.fetch).not.toHaveBeenCalled();
+  });
+
+  it('denies ViewChannel for the unverified role on the old channel', async () => {
+    const channel = makeChannel();
+    const guild = makeGuild({ channels: { 'chan-old': channel } });
+    const failures = await revokeVerificationChannelPermissions(guild, 'chan-old', 'role-u');
+    expect(failures).toEqual([]);
+    expect(channel.permissionOverwrites.edit).toHaveBeenCalledWith('role-u', {
+      ViewChannel: false,
+    });
+  });
+
+  it('records a failure when the old channel fetch rejects', async () => {
+    const guild = makeGuild();
+    const failures = await revokeVerificationChannelPermissions(guild, 'missing-old', 'role-u');
+    expect(failures).toEqual([
+      `old verification channel (<#missing-old>): no such channel missing-old`,
+    ]);
+  });
+});
+
 describe('syncHoneypotPermissions', () => {
   it('returns [] when no honeypot channel is configured', async () => {
     const guild = makeGuild();
@@ -294,5 +334,91 @@ describe('syncHoneypotPermissions', () => {
     const guild = makeGuild();
     const failures = await syncHoneypotPermissions(guild, { honeypot_channel_id: 'missing-h' });
     expect(failures).toEqual([`honeypot channel (<#missing-h>): no such channel missing-h`]);
+  });
+});
+
+describe('revokeHoneypotPermissions', () => {
+  it('returns [] immediately when no channel id is given', async () => {
+    const guild = makeGuild();
+    const failures = await revokeHoneypotPermissions(guild, null, 'role-u');
+    expect(failures).toEqual([]);
+    expect(guild.channels.fetch).not.toHaveBeenCalled();
+  });
+
+  it('returns [] immediately when no unverified role id is given', async () => {
+    const guild = makeGuild();
+    const failures = await revokeHoneypotPermissions(guild, 'chan-old', null);
+    expect(failures).toEqual([]);
+    expect(guild.channels.fetch).not.toHaveBeenCalled();
+  });
+
+  it('denies view/post/react for the unverified role on the old channel', async () => {
+    const channel = makeChannel();
+    const guild = makeGuild({ channels: { 'chan-old': channel } });
+    const failures = await revokeHoneypotPermissions(guild, 'chan-old', 'role-u');
+    expect(failures).toEqual([]);
+    expect(channel.permissionOverwrites.edit).toHaveBeenCalledWith('role-u', {
+      ViewChannel: false,
+      SendMessages: false,
+      AddReactions: false,
+    });
+  });
+
+  it('records a failure when the old channel fetch rejects', async () => {
+    const guild = makeGuild();
+    const failures = await revokeHoneypotPermissions(guild, 'missing-old', 'role-u');
+    expect(failures).toEqual([
+      `old honeypot channel (<#missing-old>): no such channel missing-old`,
+    ]);
+  });
+});
+
+describe('refreshGateMessage', () => {
+  it('returns false without fetching when no verification channel is configured', async () => {
+    const guild = makeGuild();
+    const result = await refreshGateMessage(guild, { gate_message_id: 'gate-1' });
+    expect(result).toBe(false);
+    expect(guild.channels.fetch).not.toHaveBeenCalled();
+  });
+
+  it('returns false without fetching when no gate message id is set', async () => {
+    const guild = makeGuild();
+    const result = await refreshGateMessage(guild, { verification_channel_id: 'v-1' });
+    expect(result).toBe(false);
+    expect(guild.channels.fetch).not.toHaveBeenCalled();
+  });
+
+  it('fetches and edits the existing gate message, returning true on success', async () => {
+    const gateMessage = { edit: vi.fn().mockResolvedValue(undefined) };
+    const verifChannel = { messages: { fetch: vi.fn().mockResolvedValue(gateMessage) } };
+    const guild = makeGuild({ channels: { 'v-1': verifChannel } });
+    const guildConfig = { verification_channel_id: 'v-1', gate_message_id: 'gate-1' };
+
+    const result = await refreshGateMessage(guild, guildConfig);
+
+    expect(result).toBe(true);
+    expect(verifChannel.messages.fetch).toHaveBeenCalledWith('gate-1');
+    expect(gateMessage.edit).toHaveBeenCalled();
+  });
+
+  it('returns false when the channel fetch rejects', async () => {
+    const guild = makeGuild();
+    const result = await refreshGateMessage(guild, {
+      verification_channel_id: 'missing',
+      gate_message_id: 'gate-1',
+    });
+    expect(result).toBe(false);
+  });
+
+  it('returns false when the message fetch rejects (e.g. deleted message)', async () => {
+    const verifChannel = {
+      messages: { fetch: vi.fn().mockRejectedValue(new Error('unknown message')) },
+    };
+    const guild = makeGuild({ channels: { 'v-1': verifChannel } });
+    const result = await refreshGateMessage(guild, {
+      verification_channel_id: 'v-1',
+      gate_message_id: 'gate-1',
+    });
+    expect(result).toBe(false);
   });
 });

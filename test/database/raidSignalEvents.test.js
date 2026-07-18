@@ -102,3 +102,10 @@ describe('pruneExpired', () => {
     expect(raidSignalEvents.countInWindow('g1', 'join', 0)).toBe(1);
   });
 });
+
+describe('MAX_DETECTION_WINDOW_SECONDS', () => {
+  it('stays comfortably under the 24h retention ceiling', () => {
+    expect(raidSignalEvents.MAX_DETECTION_WINDOW_SECONDS).toBeLessThan(24 * 60 * 60);
+    expect(raidSignalEvents.MAX_DETECTION_WINDOW_SECONDS).toBe(23 * 60 * 60);
+  });
+});

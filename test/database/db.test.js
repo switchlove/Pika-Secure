@@ -82,6 +82,13 @@ describe('db.js', () => {
     );
   });
 
+  it('sets a busy_timeout so concurrent multi-process writers wait instead of failing immediately', () => {
+    const db = require('../../src/database/db.js');
+    openDbs.push(db);
+    const [{ timeout }] = db.prepare('PRAGMA busy_timeout').all();
+    expect(timeout).toBe(5000);
+  });
+
   it('records every migration as applied on a fresh file', () => {
     const db = require('../../src/database/db.js');
     openDbs.push(db);
@@ -111,6 +118,8 @@ describe('db.js', () => {
       '019_add_audit_log_index.sql',
       '020_add_honeypot_bait_message.sql',
       '021_add_raid_lockdown.sql',
+      '022_add_pending_verifications_flagged_index.sql',
+      '023_add_prune_created_at_indices.sql',
     ]);
   });
 
@@ -170,6 +179,6 @@ describe('db.js', () => {
       .prepare('SELECT id FROM schema_migrations ORDER BY id')
       .all()
       .map((row) => row.id);
-    expect(applied).toHaveLength(21);
+    expect(applied).toHaveLength(23);
   });
 });

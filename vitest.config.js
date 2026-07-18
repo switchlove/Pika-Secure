@@ -8,7 +8,7 @@ module.exports = defineConfig({
       reporter: ['text', 'lcov'],
       reportsDirectory: 'coverage',
       include: ['src/**/*.js'],
-      exclude: ['src/index.js', 'src/deploy-commands.js'],
+      exclude: ['src/index.js', 'src/deploy-commands.js', 'src/shard.js'],
     },
   },
 });

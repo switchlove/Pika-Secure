@@ -108,6 +108,64 @@ async function syncHoneypotPermissions(guild, guildConfig) {
   return failures;
 }
 
+// Best-effort revoke of the unverified role's standing ViewChannel access to a channel that used
+// to be the configured verification channel but no longer is (e.g. /setup channels pointed at a
+// different channel) — without this, unverified members can still see the old gate channel after
+// reconfiguration. Explicit deny, matching syncChannelPermissions' own mod-log-channel convention.
+async function revokeVerificationChannelPermissions(guild, channelId, unverifiedRoleId) {
+  const failures = [];
+  if (!channelId || !unverifiedRoleId) return failures;
+
+  try {
+    const channel = await guild.channels.fetch(channelId);
+    await channel.permissionOverwrites.edit(unverifiedRoleId, { ViewChannel: false });
+  } catch (err) {
+    failures.push(`old verification channel (<#${channelId}>): ${err.message}`);
+  }
+
+  return failures;
+}
+
+// Best-effort revoke of the unverified role's standing access to a channel that used to be the
+// configured honeypot but no longer is (e.g. /setup honeypot pointed at a different channel) —
+// without this, the old channel stays visible/writable to unverified members while no longer
+// being monitored, i.e. a disarmed trap that still looks armed. Explicit deny (not
+// permissionOverwrites.delete()) to match syncChannelPermissions' existing convention: deleting
+// the overwrite could fall back to a more permissive category/@everyone permission.
+async function revokeHoneypotPermissions(guild, channelId, unverifiedRoleId) {
+  const failures = [];
+  if (!channelId || !unverifiedRoleId) return failures;
+
+  try {
+    const channel = await guild.channels.fetch(channelId);
+    await channel.permissionOverwrites.edit(unverifiedRoleId, {
+      ViewChannel: false,
+      SendMessages: false,
+      AddReactions: false,
+    });
+  } catch (err) {
+    failures.push(`old honeypot channel (<#${channelId}>): ${err.message}`);
+  }
+
+  return failures;
+}
+
+// Edits the existing gate message in place rather than posting a new one — used whenever the
+// verification channel isn't changing, so re-running /setup doesn't leave duplicate "Verify"
+// buttons behind. Returns false (rather than throwing) on any failure — missing channel, deleted
+// message, missing permission — so callers can fall back to posting a fresh message instead.
+async function refreshGateMessage(guild, guildConfig) {
+  if (!guildConfig.verification_channel_id || !guildConfig.gate_message_id) return false;
+  try {
+    const channel = await guild.channels.fetch(guildConfig.verification_channel_id);
+    const message = await channel.messages.fetch(guildConfig.gate_message_id);
+    await message.edit(buildGateMessagePayload(guildConfig));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function buildGateMessagePayload(guildConfig) {
   const description = [];
 
@@ -155,6 +213,9 @@ module.exports = {
   applyVerifiedRoles,
   syncChannelPermissions,
   syncHoneypotPermissions,
+  revokeVerificationChannelPermissions,
+  revokeHoneypotPermissions,
+  refreshGateMessage,
   buildGateMessagePayload,
   buildHoneypotBaitPayload,
   HONEYPOT_BAIT_EMOJI,

@@ -3,6 +3,7 @@ import embeds from '../../src/modlog/embeds.js';
 
 const {
   joinedEmbed,
+  rejoinWhileFlaggedEmbed,
   verifiedEmbed,
   captchaEscalatedEmbed,
   captchaFailedEmbed,
@@ -34,6 +35,25 @@ describe('joinedEmbed', () => {
 
   it('handles an empty reasons array', () => {
     const data = joinedEmbed(makeMember(), 0, []).data;
+    expect(data.fields[1].value).toBe('');
+  });
+});
+
+describe('rejoinWhileFlaggedEmbed', () => {
+  it('states the flag was not reset and includes the current score/reasons', () => {
+    const data = rejoinWhileFlaggedEmbed(makeMember(), 55, ['reason one', 'reason two']).data;
+    expect(data.color).toBe(0xed4245);
+    expect(data.title).toContain('rejoined');
+    expect(data.description).toContain('member-1');
+    expect(data.description).toContain('not');
+    expect(data.fields).toEqual([
+      { name: 'Current risk score', value: '55/100' },
+      { name: 'Reasons', value: '• reason one\n• reason two' },
+    ]);
+  });
+
+  it('handles an empty reasons array', () => {
+    const data = rejoinWhileFlaggedEmbed(makeMember(), 0, []).data;
     expect(data.fields[1].value).toBe('');
   });
 });

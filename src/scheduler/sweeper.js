@@ -10,9 +10,37 @@ const logger = require('../utils/logger');
 
 const SWEEP_INTERVAL_MS = 60_000;
 
+// findExpired()/findActiveLockdowns() are unfiltered, global queries against the one SQLite file
+// every process/shard shares. Under sharding, each process only owns whichever guild(s) Discord
+// routed to its shard(s), so acting on a row for a guild this process doesn't own would race with
+// the process that actually does own it — client.guilds.fetch() would happily succeed via REST
+// regardless of shard ownership, masking the race rather than erroring. client.guilds.cache only
+// contains guilds this process's shard(s) received a GUILD_CREATE for (true under both internal
+// and multi-process sharding), so this is exactly "does this process own this guild". A guild the
+// bot has been fully removed from isn't "owned" by anyone either, but that's fine: guildDelete.js
+// already purges its pending_verifications/guild_config rows immediately on removal, so the
+// sweeper skipping it here just means it was already cleaned up by that path, not left stuck.
+function ownsGuild(client, guildId) {
+  return client.guilds.cache.has(guildId);
+}
+
+// Mirrors flow.js's inFlightVerifications composite-key pattern (guild+user, not just guild —
+// unlike raidLockdown.js's engagingGuilds/liftingGuilds, since many independent pending
+// verifications can coexist per guild). Defense-in-depth: the sweeping flag in start() below
+// already fully serializes sweepOnce calls within one process, so this only matters if that
+// invariant ever changes; it costs nothing to keep correct now that ownsGuild() above restores
+// the "one guild, one process" assumption the lock pattern relies on.
+const kickingRecords = new Set();
+
 async function sweepOnce(client) {
   const expired = findExpired();
   for (const record of expired) {
+    if (!ownsGuild(client, record.guild_id)) continue;
+
+    const lockKey = `${record.guild_id}:${record.user_id}`;
+    if (kickingRecords.has(lockKey)) continue;
+    kickingRecords.add(lockKey);
+
     try {
       let guild;
       try {
@@ -42,10 +70,13 @@ async function sweepOnce(client) {
       );
     } catch (err) {
       logger.error(`Sweeper failed to process ${record.guild_id}/${record.user_id}:`, err.message);
+    } finally {
+      kickingRecords.delete(lockKey);
     }
   }
 
   for (const guildConfig of findActiveLockdowns()) {
+    if (!ownsGuild(client, guildConfig.guild_id)) continue;
     try {
       await raidLockdown.liftIfExpired(client, guildConfig);
     } catch (err) {

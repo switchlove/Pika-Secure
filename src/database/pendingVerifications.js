@@ -1,16 +1,21 @@
 const db = require('./db');
 
+// On conflict (a member who already has a row rejoining), a 'flagged' row stays flagged rather
+// than being reset to 'pending' — otherwise leaving and rejoining is a free way to wipe a flag
+// and get a fresh captcha attempt, defeating max_captcha_attempts/fast-solve detection entirely.
+// 'pending'/'captcha' rejoins still reset normally; there's no evasion concern there. Unqualified
+// column names in DO UPDATE SET refer to the pre-update row; excluded.col is the incoming value.
 const upsertStmt = db.prepare(`
   INSERT INTO pending_verifications
     (guild_id, user_id, state, risk_score, risk_reasons, captcha_attempts, deadline_at, joined_at, created_at, updated_at)
   VALUES
     (?, ?, 'pending', ?, ?, 0, ?, ?, ?, ?)
   ON CONFLICT(guild_id, user_id) DO UPDATE SET
-    state = 'pending',
+    state = CASE WHEN state = 'flagged' THEN 'flagged' ELSE 'pending' END,
     risk_score = excluded.risk_score,
     risk_reasons = excluded.risk_reasons,
-    captcha_answer = NULL,
-    captcha_attempts = 0,
+    captcha_answer = CASE WHEN state = 'flagged' THEN captcha_answer ELSE NULL END,
+    captcha_attempts = CASE WHEN state = 'flagged' THEN captcha_attempts ELSE 0 END,
     deadline_at = excluded.deadline_at,
     joined_at = excluded.joined_at,
     updated_at = excluded.updated_at

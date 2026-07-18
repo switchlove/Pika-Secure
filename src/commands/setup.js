@@ -9,12 +9,16 @@ const {
 const { getGuildConfig, updateGuildConfig } = require('../database/guildConfig');
 const { insertAuditLog, queryAuditLog } = require('../database/auditLog');
 const { findFlagged } = require('../database/pendingVerifications');
+const { MAX_DETECTION_WINDOW_SECONDS } = require('../database/raidSignalEvents');
 const { canManageBot, isTrueAdmin } = require('../utils/permissions');
 const {
   buildGateMessagePayload,
   buildHoneypotBaitPayload,
   syncChannelPermissions,
   syncHoneypotPermissions,
+  revokeVerificationChannelPermissions,
+  revokeHoneypotPermissions,
+  refreshGateMessage,
   HONEYPOT_BAIT_EMOJI,
   DEFAULT_HONEYPOT_BAIT_MESSAGE,
 } = require('../verification/quarantine');
@@ -89,7 +93,8 @@ const data = new SlashCommandBuilder()
         opt
           .setName('join_burst_window_seconds')
           .setDescription('Length of the join-burst window, in seconds')
-          .setMinValue(1),
+          .setMinValue(1)
+          .setMaxValue(MAX_DETECTION_WINDOW_SECONDS),
       )
       .addIntegerOption((opt) =>
         opt
@@ -123,7 +128,8 @@ const data = new SlashCommandBuilder()
         opt
           .setName('avatar_reuse_window_seconds')
           .setDescription('Length of the avatar-reuse detection window, in seconds')
-          .setMinValue(1),
+          .setMinValue(1)
+          .setMaxValue(MAX_DETECTION_WINDOW_SECONDS),
       )
       .addIntegerOption((opt) =>
         opt
@@ -146,7 +152,8 @@ const data = new SlashCommandBuilder()
         opt
           .setName('username_similarity_window')
           .setDescription('Length of the username-similarity detection window, in seconds')
-          .setMinValue(1),
+          .setMinValue(1)
+          .setMaxValue(MAX_DETECTION_WINDOW_SECONDS),
       )
       .addIntegerOption((opt) =>
         opt
@@ -164,7 +171,8 @@ const data = new SlashCommandBuilder()
         opt
           .setName('fast_solve_window_seconds')
           .setDescription('Length of the fast-solve detection window, in seconds')
-          .setMinValue(1),
+          .setMinValue(1)
+          .setMaxValue(MAX_DETECTION_WINDOW_SECONDS),
       )
       .addStringOption((opt) =>
         opt
@@ -179,8 +187,8 @@ const data = new SlashCommandBuilder()
       .addIntegerOption((opt) =>
         opt
           .setName('raid_lockdown_join_count')
-          .setDescription('Extreme burst count that triggers a lockdown. Unset disables it.')
-          .setMinValue(1),
+          .setDescription('Extreme burst count that triggers a lockdown. 0 disables it.')
+          .setMinValue(0),
       )
       .addIntegerOption((opt) =>
         opt
@@ -206,6 +214,7 @@ const data = new SlashCommandBuilder()
         opt
           .setName('message')
           .setDescription('Custom welcome text — use {user} to mention the new member (optional)')
+          .setMaxLength(2000)
           .setRequired(false),
       ),
   )
@@ -224,6 +233,7 @@ const data = new SlashCommandBuilder()
         opt
           .setName('message')
           .setDescription('Custom bait embed text (optional) — reduces fingerprintability')
+          .setMaxLength(1024)
           .setRequired(false),
       ),
   )
@@ -278,6 +288,7 @@ const data = new SlashCommandBuilder()
               .setDescription('Filter to a specific event type')
               .addChoices(
                 { name: 'joined', value: 'joined' },
+                { name: 'rejoin_while_flagged', value: 'rejoin_while_flagged' },
                 { name: 'verified', value: 'verified' },
                 { name: 'captcha_escalated', value: 'captcha_escalated' },
                 { name: 'captcha_failed', value: 'captcha_failed' },
@@ -337,7 +348,9 @@ function configEmbed(config, guildVerificationLevel) {
       },
       {
         name: 'Welcome message',
-        value: config.welcome_message || DEFAULT_WELCOME_MESSAGE,
+        // Discord's embed field value hard-caps at 1024 chars — tighter than the option's own
+        // 2000-char (message-content) max, so this can't rely solely on the option-level cap.
+        value: (config.welcome_message || DEFAULT_WELCOME_MESSAGE).slice(0, 1024),
         inline: false,
       },
       {
@@ -347,7 +360,7 @@ function configEmbed(config, guildVerificationLevel) {
       },
       {
         name: 'Honeypot bait message',
-        value: config.honeypot_bait_message || DEFAULT_HONEYPOT_BAIT_MESSAGE,
+        value: (config.honeypot_bait_message || DEFAULT_HONEYPOT_BAIT_MESSAGE).slice(0, 1024),
         inline: false,
       },
       { name: 'Auto-kick timeout', value: `${config.verification_timeout_min} min`, inline: true },
@@ -492,6 +505,9 @@ async function execute(interaction) {
     }
 
     if (sub === 'remove') {
+      if (!config.admin_role_ids.includes(role.id)) {
+        return interaction.reply({ embeds: [embedFor(config)], flags: MessageFlags.Ephemeral });
+      }
       const updated = updateGuildConfig(guildId, {
         admin_role_ids: config.admin_role_ids.filter((id) => id !== role.id),
       });
@@ -535,9 +551,10 @@ async function execute(interaction) {
       roles: { unverified: unverified.id, verified: verified?.id },
     });
 
-    const failures = await syncChannelPermissions(interaction.guild, updated);
+    const channelFailures = await syncChannelPermissions(interaction.guild, updated);
+    const honeypotFailures = await syncHoneypotPermissions(interaction.guild, updated);
     return interaction.reply({
-      content: permissionWarning(failures),
+      content: permissionWarning([...channelFailures, ...honeypotFailures]),
       embeds: [embedFor(updated)],
       flags: MessageFlags.Ephemeral,
     });
@@ -546,6 +563,16 @@ async function execute(interaction) {
   if (sub === 'channels') {
     const verification = interaction.options.getChannel('verification');
     const modLogChannel = interaction.options.getChannel('modlog');
+
+    if (verification.id === modLogChannel.id) {
+      return interaction.reply({
+        content:
+          'Verification and mod-log channels must be different — using the same channel for both would leave unverified members unable to see the verify gate.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    const channelChanged = config.verification_channel_id !== verification.id;
     const updated = updateGuildConfig(guildId, {
       verification_channel_id: verification.id,
       mod_log_channel_id: modLogChannel.id,
@@ -555,12 +582,33 @@ async function execute(interaction) {
     });
 
     const failures = await syncChannelPermissions(interaction.guild, updated);
+    if (channelChanged && config.verification_channel_id) {
+      failures.push(
+        ...(await revokeVerificationChannelPermissions(
+          interaction.guild,
+          config.verification_channel_id,
+          updated.unverified_role_id,
+        )),
+      );
+    }
 
-    try {
-      const message = await verification.send(buildGateMessagePayload(updated));
-      updateGuildConfig(guildId, { gate_message_id: message.id });
-    } catch (err) {
-      logger.error(`Failed to post gate message in guild ${guildId}:`, err.message);
+    const edited = !channelChanged && (await refreshGateMessage(interaction.guild, updated));
+    if (!edited) {
+      if (channelChanged && config.verification_channel_id && config.gate_message_id) {
+        try {
+          const oldChannel = await interaction.guild.channels.fetch(config.verification_channel_id);
+          const oldMessage = await oldChannel.messages.fetch(config.gate_message_id);
+          await oldMessage.delete();
+        } catch (err) {
+          logger.warn(`Failed to delete stale gate message in guild ${guildId}:`, err.message);
+        }
+      }
+      try {
+        const message = await verification.send(buildGateMessagePayload(updated));
+        updateGuildConfig(guildId, { gate_message_id: message.id });
+      } catch (err) {
+        logger.error(`Failed to post gate message in guild ${guildId}:`, err.message);
+      }
     }
 
     return interaction.reply({
@@ -587,6 +635,7 @@ async function execute(interaction) {
   if (sub === 'honeypot') {
     const channel = interaction.options.getChannel('channel');
     const baitMessage = interaction.options.getString('message');
+    const previousHoneypotChannelId = config.honeypot_channel_id;
     const updated = updateGuildConfig(guildId, {
       honeypot_channel_id: channel.id,
       honeypot_bait_message: baitMessage ?? undefined,
@@ -596,6 +645,15 @@ async function execute(interaction) {
     });
 
     const failures = await syncHoneypotPermissions(interaction.guild, updated);
+    if (previousHoneypotChannelId && previousHoneypotChannelId !== channel.id) {
+      failures.push(
+        ...(await revokeHoneypotPermissions(
+          interaction.guild,
+          previousHoneypotChannelId,
+          updated.unverified_role_id,
+        )),
+      );
+    }
 
     try {
       const baitEmbedMessage = await channel.send(buildHoneypotBaitPayload(updated));
@@ -605,17 +663,7 @@ async function execute(interaction) {
       logger.error(`Failed to post honeypot bait message in guild ${guildId}:`, err.message);
     }
 
-    if (updated.verification_channel_id && updated.gate_message_id) {
-      try {
-        const verificationChannel = await interaction.guild.channels.fetch(
-          updated.verification_channel_id,
-        );
-        const gateMessage = await verificationChannel.messages.fetch(updated.gate_message_id);
-        await gateMessage.edit(buildGateMessagePayload(updated));
-      } catch (err) {
-        logger.error(`Failed to refresh gate message in guild ${guildId}:`, err.message);
-      }
-    }
+    await refreshGateMessage(interaction.guild, updated);
 
     return interaction.reply({
       content: permissionWarning(failures),
@@ -625,6 +673,18 @@ async function execute(interaction) {
   }
 
   if (sub === 'thresholds') {
+    // getInteger returns null for both "omitted" and an explicit 0 — ?? can't tell those apart,
+    // but they mean different things here: omitted must leave the stored threshold unchanged
+    // (undefined, filtered out by updateGuildConfig), while an explicit 0 is the documented
+    // "disable raid lockdown" sentinel and must become a real null so it's actually stored.
+    const rawRaidLockdownJoinCount = interaction.options.getInteger('raid_lockdown_join_count');
+    const raidLockdownJoinCountThreshold =
+      rawRaidLockdownJoinCount === null
+        ? undefined
+        : rawRaidLockdownJoinCount === 0
+          ? null
+          : rawRaidLockdownJoinCount;
+
     const fields = {
       verification_timeout_min: interaction.options.getInteger('timeout_minutes') ?? undefined,
       min_account_age_days: interaction.options.getInteger('min_account_age_days') ?? undefined,
@@ -651,8 +711,7 @@ async function execute(interaction) {
       fast_solve_window_seconds:
         interaction.options.getInteger('fast_solve_window_seconds') ?? undefined,
       captcha_type: interaction.options.getString('captcha_type') ?? undefined,
-      raid_lockdown_join_count_threshold:
-        interaction.options.getInteger('raid_lockdown_join_count') ?? undefined,
+      raid_lockdown_join_count_threshold: raidLockdownJoinCountThreshold,
       raid_lockdown_duration_minutes:
         interaction.options.getInteger('raid_lockdown_duration_minutes') ?? undefined,
     };

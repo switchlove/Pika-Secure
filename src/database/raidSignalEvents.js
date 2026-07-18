@@ -5,6 +5,12 @@ const db = require('./db');
 // on a fixed schedule without needing to look up every guild's config first.
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 
+// Upper bound for any per-guild detection window (join burst, avatar reuse, username similarity,
+// fast-solve — see setup.js's thresholds command), derived from RETENTION_MS with a 1h safety
+// margin so a configured window can never silently exceed the prune ceiling above and degrade
+// into a shorter de-facto window with no warning.
+const MAX_DETECTION_WINDOW_SECONDS = RETENTION_MS / 1000 - 3600;
+
 const insertStmt = db.prepare(
   'INSERT INTO raid_signal_events (guild_id, kind, value, created_at) VALUES (?, ?, ?, ?)',
 );
@@ -62,4 +68,5 @@ module.exports = {
   getRecentValuesInWindow,
   pruneExpired,
   deleteAllForGuild,
+  MAX_DETECTION_WINDOW_SECONDS,
 };

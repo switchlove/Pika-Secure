@@ -73,8 +73,13 @@ function makeMember() {
   return { kick: vi.fn().mockResolvedValue(undefined) };
 }
 
-function makeClient(guildsFetchImpl) {
-  return { guilds: { fetch: vi.fn(guildsFetchImpl) } };
+function makeClient(guildsFetchImpl, ownedGuildIds) {
+  return {
+    guilds: {
+      fetch: vi.fn(guildsFetchImpl),
+      cache: { has: (id) => (ownedGuildIds ? ownedGuildIds.has(id) : true) },
+    },
+  };
 }
 
 describe('sweeper.start', () => {
@@ -107,6 +112,19 @@ describe('sweeper.start', () => {
 
     expect(raidLockdown.liftIfExpired).toHaveBeenCalledWith(client, lockdownA);
     expect(raidLockdown.liftIfExpired).toHaveBeenCalledWith(client, lockdownB);
+  });
+
+  it('skips a lockdown lift for a guild this process does not own (sharding)', async () => {
+    const lockdownMine = { guild_id: 'guild-mine', raid_lockdown_active: 1 };
+    const lockdownOthers = { guild_id: 'guild-not-mine', raid_lockdown_active: 1 };
+    guildConfigMod.findActiveLockdowns.mockReturnValue([lockdownMine, lockdownOthers]);
+    const client = makeClient(undefined, new Set(['guild-mine']));
+
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(raidLockdown.liftIfExpired).toHaveBeenCalledWith(client, lockdownMine);
+    expect(raidLockdown.liftIfExpired).not.toHaveBeenCalledWith(client, lockdownOthers);
   });
 
   it('logs and continues when one lockdown lift throws — another still completes', async () => {
@@ -205,6 +223,18 @@ describe('sweeper.start', () => {
 
     expect(pendingVerifications.markKicked).toHaveBeenCalledWith(42);
     expect(auditLog.insertAuditLog).toHaveBeenCalledWith('guild-1', 'user-1', 'auto_kicked');
+  });
+
+  it('skips an expired record for a guild this process does not own (sharding)', async () => {
+    const record = { id: 42, guild_id: 'guild-not-mine', user_id: 'user-1' };
+    pendingVerifications.findExpired.mockReturnValue([record]);
+    const client = makeClient(undefined, new Set());
+
+    sweeper.start(client);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.guilds.fetch).not.toHaveBeenCalled();
+    expect(pendingVerifications.markKicked).not.toHaveBeenCalled();
   });
 
   it('dead-letters a record when the guild is unknown (bot no longer in guild)', async () => {

@@ -22,6 +22,7 @@ let flow;
 
 const UNCONFIGURED_EMBED = { sentinel: 'unconfigured' };
 const JOINED_EMBED = { sentinel: 'joined' };
+const REJOIN_WHILE_FLAGGED_EMBED = { sentinel: 'rejoin-while-flagged' };
 const VERIFIED_EMBED = { sentinel: 'verified' };
 const CAPTCHA_ESCALATED_EMBED = { sentinel: 'captcha-escalated' };
 const CAPTCHA_FAILED_EMBED = { sentinel: 'captcha-failed' };
@@ -55,7 +56,7 @@ beforeEach(() => {
   });
 
   pendingVerifications = injectFakeModule(require, '../../src/database/pendingVerifications.js', {
-    createPendingVerification: vi.fn(),
+    createPendingVerification: vi.fn().mockReturnValue({ state: 'pending' }),
     getPendingVerification: vi.fn(),
     markVerified: vi.fn(),
     escalateToCaptcha: vi.fn(),
@@ -126,6 +127,7 @@ beforeEach(() => {
   injectFakeModule(require, '../../src/modlog/embeds.js', {
     unconfiguredEmbed: vi.fn().mockReturnValue(UNCONFIGURED_EMBED),
     joinedEmbed: vi.fn().mockReturnValue(JOINED_EMBED),
+    rejoinWhileFlaggedEmbed: vi.fn().mockReturnValue(REJOIN_WHILE_FLAGGED_EMBED),
     verifiedEmbed: vi.fn().mockReturnValue(VERIFIED_EMBED),
     captchaEscalatedEmbed: vi.fn().mockReturnValue(CAPTCHA_ESCALATED_EMBED),
     captchaFailedEmbed: vi.fn().mockReturnValue(CAPTCHA_FAILED_EMBED),
@@ -231,6 +233,35 @@ describe('handleMemberJoin', () => {
       reasons: ['low risk'],
     });
     expect(modlog.send).toHaveBeenCalledWith(member.client, guildConfig, JOINED_EMBED);
+  });
+
+  it('alerts rejoin_while_flagged instead of joined when the upsert hits an existing flagged row', async () => {
+    const guildConfig = baseGuildConfig();
+    guildConfigMod.getGuildConfig.mockReturnValue(guildConfig);
+    pendingVerifications.createPendingVerification.mockReturnValue({ state: 'flagged' });
+    const member = makeMember();
+
+    await flow.handleMemberJoin(member);
+
+    expect(quarantine.assignUnverifiedRole).toHaveBeenCalledWith(member, guildConfig);
+    expect(auditLog.insertAuditLog).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      'rejoin_while_flagged',
+      { score: 10, reasons: ['low risk'] },
+    );
+    expect(modlog.send).toHaveBeenCalledWith(
+      member.client,
+      guildConfig,
+      REJOIN_WHILE_FLAGGED_EMBED,
+    );
+    expect(auditLog.insertAuditLog).not.toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      'joined',
+      expect.anything(),
+    );
+    expect(modlog.send).not.toHaveBeenCalledWith(member.client, guildConfig, JOINED_EMBED);
   });
 
   it('evaluates raid lockdown with the burst count for this join', async () => {

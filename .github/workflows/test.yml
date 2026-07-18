@@ -45,10 +45,8 @@ jobs:
       - run: npm ci
 
       # Fails the build on any moderate+ advisory except the ones explicitly allowlisted in
-      # .audit-ci.json — currently the transitive `undici` vuln via discord.js, whose only fix
-      # is a breaking discord.js downgrade (tracked instead via Dependabot, see
-      # .github/dependabot.yml). Unlike a blanket continue-on-error, this still fails CI if a
-      # *new*, unrelated vulnerability shows up in any dependency.
+      # .audit-ci.json (empty for now — nothing currently needs allowlisting). Unlike a blanket
+      # continue-on-error, this still fails CI if a vulnerability shows up in any dependency.
       - name: Audit dependencies
         run: npm run audit
 

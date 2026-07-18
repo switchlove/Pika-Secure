@@ -144,7 +144,7 @@ async function handleMemberJoin(member) {
   );
   const deadlineAt = Date.now() + guildConfig.verification_timeout_min * 60_000;
 
-  createPendingVerification({
+  const record = createPendingVerification({
     guildId: member.guild.id,
     userId: member.id,
     riskScore: score,
@@ -157,6 +157,20 @@ async function handleMemberJoin(member) {
     await assignUnverifiedRole(member, guildConfig);
   } catch (err) {
     logger.error(`Failed to assign unverified role in guild ${member.guild.id}:`, err.message);
+  }
+
+  // A fresh INSERT always yields state='pending', so 'flagged' here can only mean the upsert hit
+  // an existing flagged row — i.e. this member left and rejoined while still flagged. The row
+  // itself already stayed flagged (see pendingVerifications.js); this just makes sure staff are
+  // alerted to the rejoin instead of it looking like an ordinary join.
+  if (record.state === 'flagged') {
+    insertAuditLog(member.guild.id, member.id, 'rejoin_while_flagged', { score, reasons });
+    await modlog.send(
+      member.client,
+      guildConfig,
+      embeds.rejoinWhileFlaggedEmbed(member, score, reasons),
+    );
+    return;
   }
 
   insertAuditLog(member.guild.id, member.id, 'joined', { score, reasons });

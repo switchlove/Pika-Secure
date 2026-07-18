@@ -5,6 +5,16 @@ const { token } = require('./config/env');
 const logger = require('./utils/logger');
 const { createShutdownHandler } = require('./utils/shutdown');
 
+// ShardingManager (src/shard.js) sets SHARDING_MANAGER plus SHARDS/SHARD_COUNT on every child it
+// spawns — discord.js's Client only picks those up automatically when `shards`/`shardCount` are
+// omitted entirely, so passing `shards: 'auto'` unconditionally here would override and discard
+// the shard(s) ShardingManager actually assigned this process. Standalone (no ShardingManager,
+// today's `npm start`), 'auto' asks Discord for its recommended shard count at connect time and
+// shards internally within this one process if needed — for a low guild count that still resolves
+// to a single shard, so this is a no-op change until the bot actually approaches Discord's
+// ~2,500-guild sharding threshold.
+const shardOptions = process.env.SHARDING_MANAGER ? {} : { shards: 'auto' };
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -13,6 +23,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessageReactions,
   ],
   partials: [Partials.Message, Partials.Reaction, Partials.User],
+  ...shardOptions,
 });
 
 client.commands = new Collection();
