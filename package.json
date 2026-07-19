@@ -29,7 +29,7 @@
   },
   "optionalDependencies": {
     "@napi-rs/canvas-win32-x64-msvc": "^1.0.2",
-    "@rolldown/binding-win32-x64-msvc": "^1.1.5"
+    "@rolldown/binding-win32-x64-msvc": "^1.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
