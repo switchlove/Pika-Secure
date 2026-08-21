@@ -23,7 +23,7 @@
     "audit": "audit-ci --config .audit-ci.json"
   },
   "dependencies": {
-    "@napi-rs/canvas": "^1.0.2",
+    "@napi-rs/canvas": "^1.0.6",
     "discord.js": "^14.26.5",
     "dotenv": "^17.4.2"
   },
