@@ -28,7 +28,7 @@
     "dotenv": "^17.4.2"
   },
   "optionalDependencies": {
-    "@napi-rs/canvas-win32-x64-msvc": "^1.0.2",
+    "@napi-rs/canvas-win32-x64-msvc": "^1.0.6",
     "@rolldown/binding-win32-x64-msvc": "^1.2.4"
   },
   "devDependencies": {
